@@ -4,12 +4,23 @@
 // Usage:
 //   node deploy.js ["commit message"]
 //
-// If no commit message is given and there are changes to commit, you'll be
-// prompted for one. Aborts on any failed step (typecheck, build, cargo test)
-// so broken code never reaches origin/main.
+// If no commit message is given, one is generated from the changed files.
+// Aborts on any failed step (typecheck, build, cargo test) so broken code
+// never reaches origin/main. Fully non-interactive — no prompts.
 
 import { execSync } from "node:child_process";
-import { createInterface } from "node:readline/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+// cargo + the vendored OpenSSL build need these on PATH (see CLAUDE.md's build
+// note); the calling shell doesn't always have them, so add them ourselves.
+const extraPaths = [
+  join(process.env.USERPROFILE ?? "", ".cargo", "bin"),
+  "C:\\Strawberry\\perl\\bin",
+].filter((p) => existsSync(p) && !process.env.PATH.includes(p));
+if (extraPaths.length) {
+  process.env.PATH = `${extraPaths.join(";")};${process.env.PATH}`;
+}
 
 function run(cmd, opts = {}) {
   console.log(`\n$ ${cmd}`);
@@ -20,11 +31,18 @@ function runCapture(cmd) {
   return execSync(cmd, { encoding: "utf8" }).trim();
 }
 
-async function prompt(question) {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(question);
-  rl.close();
-  return answer;
+// "M src/foo.ts" / "?? src/bar.ts" -> "src" (top-level dir, or the bare
+// filename for root-level files), deduplicated and capped so the message
+// stays short even for a big change set.
+function autoMessage(statusPorcelain) {
+  const paths = statusPorcelain
+    .split("\n")
+    .map((line) => line.slice(3).trim())
+    .filter(Boolean);
+  const groups = [...new Set(paths.map((p) => p.split("/")[0]))];
+  const shown = groups.slice(0, 4).join(", ");
+  const more = groups.length > 4 ? ` and ${groups.length - 4} more` : "";
+  return `Update ${shown}${more}`;
 }
 
 async function main() {
@@ -44,14 +62,8 @@ async function main() {
   const status = runCapture("git status --porcelain");
   if (status) {
     run("git add -A");
-    let message = process.argv.slice(2).join(" ").trim();
-    if (!message) {
-      message = await prompt("Commit message: ");
-    }
-    if (!message) {
-      console.error("No commit message given, aborting.");
-      process.exit(1);
-    }
+    const message = process.argv.slice(2).join(" ").trim() || autoMessage(status);
+    console.log(`Commit message: ${message}`);
     run(`git commit -m ${JSON.stringify(message)}`);
   } else {
     console.log("Working tree clean, nothing to commit.");

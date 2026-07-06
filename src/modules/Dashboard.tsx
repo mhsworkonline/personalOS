@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, DashboardData, Person, TimelineEvent } from "../api";
+import { api, DashboardData, FinanceCharts, Person, TimelineEvent } from "../api";
 import { NavTarget } from "../App";
 import { Confirm, Empty, Field, Modal, personLabel, Tone, useToast } from "../components/ui";
+import { MonthlyFlowChart, RankedBarChart } from "../components/charts";
 import { dueLabel, fmtDate, fmtDateTime, fmtMoney, todayISO } from "../lib/format";
 import {
   BellPlus,
@@ -53,6 +54,7 @@ export default function Dashboard({
   onChanged: () => void;
 }) {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [charts, setCharts] = useState<FinanceCharts | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDue, setTaskDue] = useState("");
@@ -65,6 +67,7 @@ export default function Dashboard({
   const load = useCallback(() => {
     api.getDashboard(30).then(setData).catch(() => {});
     api.personList().then(setPeople).catch(() => {});
+    api.financeCharts().then(setCharts).catch(() => {});
   }, []);
 
   useEffect(load, [load, refreshKey]);
@@ -309,6 +312,27 @@ export default function Dashboard({
           </section>
         </div>
       </div>
+
+      {charts && (charts.monthly.some((m) => m.income || m.expense) || charts.categories.length > 0) && (
+        <div className="grid grid-cols-2 gap-4 max-w-[1200px] mt-4">
+          <section className="card p-4">
+            <h2 className="font-semibold text-[13px] uppercase tracking-wide text-mut mb-3">
+              Cash flow — last 6 months
+            </h2>
+            <MonthlyFlowChart months={charts.monthly} currency={currency} />
+          </section>
+          <section className="card p-4">
+            <h2 className="font-semibold text-[13px] uppercase tracking-wide text-mut mb-3">
+              Top spending categories — this month
+            </h2>
+            {charts.categories.length === 0 ? (
+              <Empty text="No expenses recorded this month" />
+            ) : (
+              <RankedBarChart items={charts.categories} currency={currency} />
+            )}
+          </section>
+        </div>
+      )}
 
       {reminderOpen && (
         <ReminderModal

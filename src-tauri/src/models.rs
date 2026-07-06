@@ -278,6 +278,25 @@ pub struct FinanceOverview {
     pub active_emis: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MonthlyFlow {
+    pub month: String,
+    pub income: f64,
+    pub expense: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CategorySpend {
+    pub category: String,
+    pub total: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FinanceCharts {
+    pub monthly: Vec<MonthlyFlow>,
+    pub categories: Vec<CategorySpend>,
+}
+
 // ---------------------------------------------------------------------------
 // Notes
 // ---------------------------------------------------------------------------

@@ -8,8 +8,8 @@
 use super::with_db;
 use crate::db::{self, advance_date, index_record, log_activity, sync_timeline, unindex_record};
 use crate::models::{
-    Account, AccountInput, Emi, EmiInput, FinanceOverview, KindTotal, Subscription,
-    SubscriptionInput, Transaction, TransactionInput,
+    Account, AccountInput, CategorySpend, Emi, EmiInput, FinanceCharts, FinanceOverview, KindTotal,
+    MonthlyFlow, Subscription, SubscriptionInput, Transaction, TransactionInput,
 };
 use crate::AppState;
 use rusqlite::{params, Connection, Row};
@@ -744,5 +744,63 @@ pub fn finance_overview(state: State<'_, AppState>) -> Result<FinanceOverview, S
             active_subscriptions,
             active_emis,
         })
+    })
+}
+
+/// Cash flow for the last 6 calendar months and expense-by-category for the
+/// current month, both derived from `transactions` (no new tables needed).
+#[tauri::command]
+pub fn finance_charts(state: State<'_, AppState>) -> Result<FinanceCharts, String> {
+    with_db(&state, |conn| {
+        let today = db::today();
+        let mut y: i32 = today[0..4].parse().map_err(|_| "bad date".to_string())?;
+        let mut m: i32 = today[5..7].parse().map_err(|_| "bad date".to_string())?;
+        let mut months = Vec::with_capacity(6);
+        for _ in 0..6 {
+            months.push(format!("{y:04}-{m:02}"));
+            m -= 1;
+            if m == 0 {
+                m = 12;
+                y -= 1;
+            }
+        }
+        months.reverse();
+
+        let mut monthly = Vec::with_capacity(months.len());
+        for month in &months {
+            let pattern = format!("{month}%");
+            let (income, expense): (f64, f64) = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(CASE WHEN kind = 'income' THEN amount ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount ELSE 0 END), 0)
+                     FROM transactions WHERE date LIKE ?1",
+                    params![pattern],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            monthly.push(MonthlyFlow { month: month.clone(), income, expense });
+        }
+
+        let current_month_pattern = format!("{}%", &today[0..7]);
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(NULLIF(TRIM(category), ''), 'Other') AS cat, SUM(amount) AS total
+                 FROM transactions
+                 WHERE kind = 'expense' AND date LIKE ?1
+                 GROUP BY cat ORDER BY total DESC LIMIT 8",
+            )
+            .map_err(|e| e.to_string())?;
+        let categories = stmt
+            .query_map(params![current_month_pattern], |r| {
+                Ok(CategorySpend {
+                    category: r.get(0)?,
+                    total: r.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(FinanceCharts { monthly, categories })
     })
 }

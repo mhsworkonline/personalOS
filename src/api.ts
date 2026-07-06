@@ -305,6 +305,22 @@ export interface FinanceOverview {
   active_emis: number;
 }
 
+export interface MonthlyFlow {
+  month: string;
+  income: number;
+  expense: number;
+}
+
+export interface CategorySpend {
+  category: string;
+  total: number;
+}
+
+export interface FinanceCharts {
+  monthly: MonthlyFlow[];
+  categories: CategorySpend[];
+}
+
 export interface Folder {
   id: number;
   name: string;
@@ -404,6 +420,7 @@ export const api = {
 
   // finance
   financeOverview: () => invoke<FinanceOverview>("finance_overview"),
+  financeCharts: () => invoke<FinanceCharts>("finance_charts"),
   accountList: () => invoke<Account[]>("account_list"),
   accountSave: (input: {
     id: number | null;

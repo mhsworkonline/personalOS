@@ -70,6 +70,7 @@ pub fn run() {
             commands::vault::vault_save,
             commands::vault::vault_delete,
             commands::finance::finance_overview,
+            commands::finance::finance_charts,
             commands::finance::account_list,
             commands::finance::account_save,
             commands::finance::account_delete,
