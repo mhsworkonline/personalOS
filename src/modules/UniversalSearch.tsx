@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, SearchResult } from "../api";
 import { NavTarget } from "../App";
+import { searchWorkbench } from "./workbench/mockData";
 import {
   CheckCircle2,
   CreditCard,
   FileText,
   KeyRound,
   Landmark,
+  MessageSquare,
   Receipt,
   RefreshCcw,
   Search,
   StickyNote,
   Bell,
+  BookOpen,
   Users,
   Zap,
 } from "lucide-react";
@@ -28,6 +31,8 @@ const MODULE_META: Record<string, { label: string; icon: React.ReactNode }> = {
   emis: { label: "EMIs", icon: <CreditCard size={14} /> },
   notes: { label: "Notes", icon: <StickyNote size={14} /> },
   reminder: { label: "Reminders", icon: <Bell size={14} /> },
+  chat: { label: "Workbench chats", icon: <MessageSquare size={14} /> },
+  card: { label: "Workbench library", icon: <BookOpen size={14} /> },
 };
 
 function targetFor(r: SearchResult): NavTarget {
@@ -44,6 +49,10 @@ function targetFor(r: SearchResult): NavTarget {
     case "subscriptions":
     case "emis":
       return { view: "finance", recordModule: r.module, recordId: r.record_id };
+    case "chat":
+      return { view: "workbench", recordModule: "chats", recordId: r.record_id };
+    case "card":
+      return { view: "workbench", recordModule: "cards", recordId: r.record_id };
     default:
       return { view: "dashboard" };
   }
@@ -81,7 +90,7 @@ export default function UniversalSearch({
         .universalSearch(q)
         .then((r) => {
           if (seq.current === mySeq) {
-            setResults(r);
+            setResults([...r, ...searchWorkbench(q)]);
             setActive(0);
           }
         })

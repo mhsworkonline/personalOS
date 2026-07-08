@@ -313,13 +313,20 @@ export default function Dashboard({
         </div>
       </div>
 
-      {charts && (charts.monthly.some((m) => m.income || m.expense) || charts.categories.length > 0) && (
+      {charts && (
         <div className="grid grid-cols-2 gap-4 max-w-[1200px] mt-4">
           <section className="card p-4">
             <h2 className="font-semibold text-[13px] uppercase tracking-wide text-mut mb-3">
               Cash flow — last 6 months
             </h2>
-            <MonthlyFlowChart months={charts.monthly} currency={currency} />
+            {charts.monthly.some((m) => m.income || m.expense) ? (
+              <MonthlyFlowChart months={charts.monthly} currency={currency} />
+            ) : (
+              <Empty
+                text="No transactions recorded yet"
+                hint="Add income and expenses under Finance → Transactions to see monthly trends here."
+              />
+            )}
           </section>
           <section className="card p-4">
             <h2 className="font-semibold text-[13px] uppercase tracking-wide text-mut mb-3">

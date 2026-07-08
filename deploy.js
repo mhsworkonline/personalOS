@@ -45,6 +45,36 @@ function autoMessage(statusPorcelain) {
   return `Update ${shown}${more}`;
 }
 
+// Coarse secret patterns checked against the actual staged diff (not just
+// filenames) right before commit. Not a substitute for care, but catches an
+// accidentally-pasted real key before it reaches a public remote.
+const SECRET_PATTERNS = [
+  /sk-ant-[A-Za-z0-9_-]{16,}/,
+  /sk-proj-[A-Za-z0-9_-]{16,}/,
+  /AKIA[0-9A-Z]{16}/,
+  /ghp_[A-Za-z0-9]{36}/,
+  /xox[baprs]-[A-Za-z0-9-]{10,}/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /(api[_-]?key|secret|password|token)\s*[:=]\s*["'][A-Za-z0-9_\-/.+]{12,}["']/i,
+];
+
+function scanStagedForSecrets() {
+  const diff = runCapture("git diff --cached -U0 -- . \":(exclude)package-lock.json\"");
+  const added = diff
+    .split("\n")
+    .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+  const hits = [];
+  for (const line of added) {
+    for (const pattern of SECRET_PATTERNS) {
+      if (pattern.test(line)) {
+        hits.push(line.slice(0, 200));
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
 async function main() {
   const branch = runCapture("git rev-parse --abbrev-ref HEAD");
   if (branch !== "main") {
@@ -62,6 +92,13 @@ async function main() {
   const status = runCapture("git status --porcelain");
   if (status) {
     run("git add -A");
+    const secretHits = scanStagedForSecrets();
+    if (secretHits.length) {
+      console.error("\nRefusing to commit: possible secret(s) in staged changes:");
+      secretHits.forEach((h) => console.error("  " + h));
+      run("git reset");
+      process.exit(1);
+    }
     const message = process.argv.slice(2).join(" ").trim() || autoMessage(status);
     console.log(`Commit message: ${message}`);
     run(`git commit -m ${JSON.stringify(message)}`);

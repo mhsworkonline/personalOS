@@ -3,3 +3,24 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 *.log
+
+# local Claude Code session state — not project config
+.claude/
+
+# secrets / local env overrides
+.env
+.env.*
+*.pem
+*.key
+
+# encrypted app backups / local data — never belong in the repo
+*.posb
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

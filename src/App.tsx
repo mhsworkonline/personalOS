@@ -10,6 +10,7 @@ import Settings from "./modules/Settings";
 import UniversalSearch from "./modules/UniversalSearch";
 import QuickCapture from "./modules/QuickCapture";
 import People from "./modules/People";
+import Workbench from "./modules/workbench/Workbench";
 import {
   LayoutDashboard,
   KeyRound,
@@ -17,12 +18,13 @@ import {
   StickyNote,
   Settings as SettingsIcon,
   Search,
+  Sparkles,
   Users,
   Zap,
   Lock,
 } from "lucide-react";
 
-export type View = "dashboard" | "people" | "vault" | "finance" | "notes" | "settings";
+export type View = "dashboard" | "workbench" | "people" | "vault" | "finance" | "notes" | "settings";
 
 /** Cross-module navigation: view + optionally a record to open inside it. */
 export interface NavTarget {
@@ -44,11 +46,14 @@ export default function App() {
 
   const currency = settings.currency_symbol ?? "$";
 
-  const loadSettings = useCallback(async () => {
+  const loadSettings = useCallback(async (): Promise<Record<string, string>> => {
     try {
-      setSettings(await api.settingsGet());
+      const s = await api.settingsGet();
+      setSettings(s);
+      return s;
     } catch {
       /* locked */
+      return {};
     }
   }, []);
 
@@ -57,7 +62,7 @@ export default function App() {
       setSetupRequired(s === "setup_required");
       if (s === "unlocked") {
         setStatus("unlocked");
-        loadSettings();
+        loadSettings().then((set) => setView(set.start_on_workbench === "1" ? "workbench" : "dashboard"));
       } else {
         setStatus("locked");
       }
@@ -110,6 +115,9 @@ export default function App() {
       } else if (k === "n" && !e.shiftKey) {
         e.preventDefault();
         navigate({ view: "notes", recordModule: "notes", recordId: -1 }); // -1 = new note
+      } else if (k === "k") {
+        e.preventDefault();
+        navigate({ view: "workbench", recordModule: "home", recordId: -1 });
       } else if (k === "v" && e.shiftKey) {
         e.preventDefault();
         navigate({ view: "vault" });
@@ -153,9 +161,8 @@ export default function App() {
           onUnlocked={() => {
             setSetupRequired(false);
             setStatus("unlocked");
-            setView("dashboard");
             lastActivity.current = Date.now();
-            loadSettings();
+            loadSettings().then((set) => setView(set.start_on_workbench === "1" ? "workbench" : "dashboard"));
           }}
         />
       </ToastProvider>
@@ -164,6 +171,7 @@ export default function App() {
 
   const navItems: { view: View; label: string; icon: React.ReactNode; kbd?: string }[] = [
     { view: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={17} /> },
+    { view: "workbench", label: "Workbench", icon: <Sparkles size={17} />, kbd: "Ctrl+K" },
     { view: "people", label: "People", icon: <Users size={17} /> },
     { view: "vault", label: "Vault", icon: <KeyRound size={17} />, kbd: "Ctrl+Shift+V" },
     { view: "finance", label: "Finance", icon: <Wallet size={17} /> },
@@ -247,6 +255,7 @@ export default function App() {
               onChanged={dataChanged}
             />
           )}
+          {view === "workbench" && <Workbench refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "people" && (
             <People
               refreshKey={refreshKey}

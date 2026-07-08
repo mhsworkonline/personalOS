@@ -1,10 +1,23 @@
 import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import { Field, Modal, useToast } from "../components/ui";
-import { DownloadCloud, KeyRound, ShieldCheck, UploadCloud } from "lucide-react";
+import { Confirm, Field, MasterGate, Modal, useToast } from "../components/ui";
+import { wb } from "./workbench/mockData";
+import { AiProvider, AiProviderInput, ProviderKind } from "./workbench/types";
+import {
+  Bot,
+  DownloadCloud,
+  Eye,
+  KeyRound,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  UploadCloud,
+} from "lucide-react";
 
 const SHORTCUTS: [string, string][] = [
+  ["Ctrl + K", "Open Workbench"],
   ["Ctrl + Space", "Universal Search"],
   ["Ctrl + Shift + Space", "Quick Capture"],
   ["Ctrl + N", "New note"],
@@ -28,6 +41,7 @@ export default function Settings({
 }) {
   const [autoLock, setAutoLock] = useState(settings.auto_lock_minutes ?? "5");
   const [currency, setCurrency] = useState(settings.currency_symbol ?? "$");
+  const [startOnWorkbench, setStartOnWorkbench] = useState(settings.start_on_workbench === "1");
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [changePw, setChangePw] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -37,6 +51,7 @@ export default function Settings({
   useEffect(() => {
     setAutoLock(settings.auto_lock_minutes ?? "5");
     setCurrency(settings.currency_symbol ?? "$");
+    setStartOnWorkbench(settings.start_on_workbench === "1");
   }, [settings]);
 
   useEffect(() => {
@@ -82,7 +97,21 @@ export default function Settings({
               />
             </Field>
           </div>
+          <label className="flex items-center gap-2 text-[13px] mt-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={startOnWorkbench}
+              onChange={(e) => {
+                setStartOnWorkbench(e.target.checked);
+                setSetting("start_on_workbench", e.target.checked ? "1" : "0");
+              }}
+            />
+            Start PersonalOS on Workbench
+          </label>
         </section>
+
+        {/* AI Providers */}
+        <ProvidersSection />
 
         {/* Security */}
         <section className="card p-4">
@@ -309,6 +338,191 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
           disabled={busy || !password || ack.toLowerCase() !== "replace"}
         >
           {busy ? "Restoring…" : "Choose file & restore"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI Providers (AI Workbench §11.7) — UI-only preview backed by ./workbench/
+// mockData; nothing here opens a socket. See AI_WORKBENCH_DESIGN.md.
+// ---------------------------------------------------------------------------
+
+function maskKey(key: string): string {
+  if (!key.trim()) return "no key";
+  return `key ••••${key.slice(-4)}`;
+}
+
+function ProvidersSection() {
+  const [providers, setProviders] = useState<AiProvider[]>([]);
+  const [editing, setEditing] = useState<AiProvider | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<AiProvider | null>(null);
+  const [revealing, setRevealing] = useState<AiProvider | null>(null);
+  const [revealed, setRevealed] = useState<Record<number, boolean>>({});
+  const [testing, setTesting] = useState<number | null>(null);
+  const toast = useToast();
+
+  const load = () => wb.providerList().then(setProviders).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  const test = async (p: AiProvider) => {
+    setTesting(p.id);
+    try {
+      const msg = await wb.providerTest(p.id);
+      toast(msg);
+    } catch (e) {
+      toast(String(e), "bad");
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  return (
+    <section className="card p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-[13px] uppercase tracking-wide text-mut font-semibold flex items-center gap-1.5">
+          <Bot size={14} /> AI Providers
+        </h2>
+        <button className="btn-edge !py-1 text-[12px]" onClick={() => setEditing("new")}>
+          <Plus size={13} /> Add
+        </button>
+      </div>
+      <p className="text-mut text-[12.5px] leading-relaxed mb-3">
+        This build previews the AI Workbench UI with sample data — no key here is ever sent
+        anywhere. A real provider connection is a future addition (see AI_WORKBENCH_DESIGN.md).
+      </p>
+      {providers.length === 0 && <p className="text-mut text-[12.5px] mb-2">No providers configured.</p>}
+      <div className="flex flex-col gap-2">
+        {providers.map((p) => (
+          <div key={p.id} className="flex items-center gap-2 rounded-md border border-edge px-3 py-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 text-[13px]">
+                <span className="font-medium">{p.name}</span>
+                <span className="text-mut text-[11px] truncate">{p.base_url}</span>
+                {!p.enabled && <span className="text-mut text-[11px]">disabled</span>}
+              </div>
+              <div className="text-mut text-[11px] flex items-center gap-2 mt-0.5">
+                <span>{revealed[p.id] ? `key: ${p.api_key || "(none)"}` : maskKey(p.api_key)}</span>
+                {p.api_key && !revealed[p.id] && (
+                  <button className="btn-ghost !p-0 text-[11px]" onClick={() => setRevealing(p)}>
+                    <Eye size={11} /> reveal
+                  </button>
+                )}
+                <span className="truncate">models: {p.models.join(", ") || "none"}</span>
+              </div>
+            </div>
+            <button className="btn-edge !py-1 text-[12px] shrink-0" onClick={() => test(p)} disabled={testing === p.id}>
+              {testing === p.id ? "Testing…" : "Test"}
+            </button>
+            <button className="btn-ghost !p-1.5 shrink-0" title="Edit" onClick={() => setEditing(p)}>
+              <Pencil size={14} />
+            </button>
+            <button className="btn-ghost !p-1.5 shrink-0 text-bad" title="Delete" onClick={() => setConfirmDelete(p)}>
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {editing && (
+        <ProviderFormModal
+          provider={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            load();
+          }}
+        />
+      )}
+      {revealing && (
+        <MasterGate
+          onClose={() => setRevealing(null)}
+          onVerified={() => setRevealed((r) => ({ ...r, [revealing.id]: true }))}
+        />
+      )}
+      {confirmDelete && (
+        <Confirm
+          message={`Delete "${confirmDelete.name}"?`}
+          onClose={() => setConfirmDelete(null)}
+          onConfirm={() => wb.providerDelete(confirmDelete.id).then(load)}
+        />
+      )}
+    </section>
+  );
+}
+
+function ProviderFormModal({
+  provider,
+  onClose,
+  onSaved,
+}: {
+  provider: AiProvider | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(provider?.name ?? "");
+  const [kind, setKind] = useState<ProviderKind>(provider?.kind ?? "anthropic");
+  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
+  const [apiKey, setApiKey] = useState(provider?.api_key ?? "");
+  const [models, setModels] = useState(provider?.models.join(", ") ?? "");
+  const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+  const toast = useToast();
+
+  const save = async () => {
+    if (!name.trim() || !baseUrl.trim()) return;
+    const input: AiProviderInput = {
+      id: provider?.id ?? null,
+      name: name.trim(),
+      kind,
+      base_url: baseUrl.trim(),
+      api_key: apiKey,
+      models: models
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
+      enabled,
+    };
+    try {
+      await wb.providerSave(input);
+      onSaved();
+    } catch (e) {
+      toast(String(e), "bad");
+    }
+  };
+
+  return (
+    <Modal title={provider ? "Edit provider" : "Add provider"} onClose={onClose}>
+      <Field label="Name">
+        <input className="ctl" value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="Anthropic" />
+      </Field>
+      <Field label="Kind">
+        <select className="ctl" value={kind} onChange={(e) => setKind(e.target.value as ProviderKind)}>
+          <option value="anthropic">Anthropic</option>
+          <option value="openai_compat">OpenAI-compatible (OpenAI, OpenRouter, Ollama, LM Studio…)</option>
+        </select>
+      </Field>
+      <Field label="Base URL">
+        <input className="ctl" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.anthropic.com" />
+      </Field>
+      <Field label="API key (leave blank for local providers)">
+        <input type="password" className="ctl" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+      </Field>
+      <Field label="Models (comma-separated ids)">
+        <input className="ctl" value={models} onChange={(e) => setModels(e.target.value)} placeholder="claude-sonnet-5, claude-haiku-4-5" />
+      </Field>
+      <label className="flex items-center gap-2 text-[13px] mb-2 cursor-pointer">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Enabled
+      </label>
+      <div className="flex justify-end gap-2 mt-1">
+        <button className="btn-edge" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn-acc" onClick={save} disabled={!name.trim() || !baseUrl.trim()}>
+          {provider ? "Save changes" : "Add provider"}
         </button>
       </div>
     </Modal>
