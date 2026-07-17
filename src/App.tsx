@@ -5,6 +5,7 @@ import LockScreen from "./modules/LockScreen";
 import Dashboard from "./modules/Dashboard";
 import Vault from "./modules/Vault";
 import Finance from "./modules/Finance";
+import Investments from "./modules/Investments";
 import Notes from "./modules/Notes";
 import Settings from "./modules/Settings";
 import UniversalSearch from "./modules/UniversalSearch";
@@ -22,9 +23,18 @@ import {
   Users,
   Zap,
   Lock,
+  Home,
 } from "lucide-react";
 
-export type View = "dashboard" | "workbench" | "people" | "vault" | "finance" | "notes" | "settings";
+export type View =
+  | "dashboard"
+  | "workbench"
+  | "people"
+  | "vault"
+  | "finance"
+  | "investments"
+  | "notes"
+  | "settings";
 
 /** Cross-module navigation: view + optionally a record to open inside it. */
 export interface NavTarget {
@@ -68,6 +78,11 @@ export default function App() {
       }
     });
   }, [loadSettings]);
+
+  // Once-a-day local encrypted backup; silent unless it actually runs.
+  useEffect(() => {
+    if (status === "unlocked") api.autoBackupRun().catch(() => {});
+  }, [status]);
 
   const lock = useCallback(async () => {
     try {
@@ -175,6 +190,7 @@ export default function App() {
     { view: "people", label: "People", icon: <Users size={17} /> },
     { view: "vault", label: "Vault", icon: <KeyRound size={17} />, kbd: "Ctrl+Shift+V" },
     { view: "finance", label: "Finance", icon: <Wallet size={17} /> },
+    { view: "investments", label: "Investments", icon: <Home size={17} /> },
     { view: "notes", label: "Notes", icon: <StickyNote size={17} />, kbd: "Ctrl+N" },
   ];
 
@@ -268,6 +284,9 @@ export default function App() {
           {view === "vault" && <Vault refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "finance" && (
             <Finance refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
+          )}
+          {view === "investments" && (
+            <Investments refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
           )}
           {view === "notes" && <Notes refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "settings" && (

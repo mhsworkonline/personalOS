@@ -85,6 +85,7 @@ export interface Doc {
   expiry_date: string | null;
   issuing_authority: string | null;
   notes: string | null;
+  investment_id: number | null;
   files: DocumentFileMeta[];
   created_at: string;
   updated_at: string;
@@ -100,6 +101,7 @@ export interface DocInput {
   expiry_date: string | null;
   issuing_authority: string | null;
   notes: string | null;
+  investment_id: number | null;
 }
 
 export interface PersonOverview {
@@ -110,6 +112,7 @@ export interface PersonOverview {
   vault: VaultItemMeta[];
   notes: NoteMeta[];
   subscriptions: Subscription[];
+  investments: InvestmentSummary[];
   tasks: Task[];
   timeline: TimelineEvent[];
 }
@@ -246,6 +249,7 @@ export interface Account {
   name: string;
   kind: AccountKind;
   balance: number;
+  opening_balance: number;
   notes: string | null;
   person_id: number | null;
   details: AccountDetails;
@@ -257,12 +261,26 @@ export interface Transaction {
   id: number;
   account_id: number;
   account_name: string;
-  kind: "expense" | "income";
+  kind: "expense" | "income" | "transfer_out" | "transfer_in";
   amount: number;
   category: string | null;
   description: string | null;
   date: string;
+  transfer_peer_id: number | null;
   created_at: string;
+}
+
+export interface TransferInput {
+  from_account_id: number;
+  to_account_id: number;
+  amount: number;
+  date: string;
+  notes: string | null;
+}
+
+export interface TransferResult {
+  debit: Transaction;
+  credit: Transaction;
 }
 
 export type Cycle = "weekly" | "monthly" | "quarterly" | "yearly";
@@ -290,6 +308,8 @@ export interface Emi {
   next_due: string;
   active: boolean;
   notes: string | null;
+  investment_id: number | null;
+  settle_account_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -319,6 +339,98 @@ export interface CategorySpend {
 export interface FinanceCharts {
   monthly: MonthlyFlow[];
   categories: CategorySpend[];
+}
+
+export interface TransactionCategory {
+  id: number;
+  name: string;
+}
+
+// ---------------------------------------------------------------------------
+// Investments (land, plot, flat, house — purchase / rent / sale)
+// ---------------------------------------------------------------------------
+
+export type InvestmentKind = "land" | "plot" | "flat" | "house" | "shop" | "other";
+export type InvestmentTxKind = "purchase" | "expense" | "rent_income" | "sale";
+export type InvestmentStatus = "owned" | "rented" | "sold";
+
+export interface RentSchedule {
+  id: number;
+  investment_id: number;
+  monthly_amount: number;
+  next_due: string;
+  tenant_name: string | null;
+  notes: string | null;
+  settle_account_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RentScheduleInput {
+  id: number | null;
+  investment_id: number;
+  monthly_amount: number;
+  next_due: string;
+  tenant_name: string | null;
+  notes: string | null;
+  settle_account_id: number | null;
+}
+
+export interface InvestmentTransaction {
+  id: number;
+  investment_id: number;
+  kind: InvestmentTxKind;
+  amount: number;
+  date: string;
+  counterparty: string | null;
+  notes: string | null;
+  settle_account_id: number | null;
+  linked_transaction_id: number | null;
+  created_at: string;
+}
+
+export interface InvestmentTransactionInput {
+  id: number | null;
+  investment_id: number;
+  kind: InvestmentTxKind;
+  amount: number;
+  date: string;
+  counterparty: string | null;
+  notes: string | null;
+  settle_account_id: number | null;
+}
+
+export interface InvestmentSummary {
+  id: number;
+  name: string;
+  kind: InvestmentKind;
+  address: string | null;
+  notes: string | null;
+  person_id: number | null;
+  status: InvestmentStatus;
+  total_purchase: number;
+  total_expense: number;
+  total_rent_income: number;
+  total_sale: number;
+  gain: number;
+  rent_schedule: RentSchedule | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestmentInput {
+  id: number | null;
+  person_id: number | null;
+  name: string;
+  kind: InvestmentKind;
+  address: string | null;
+  notes: string | null;
+}
+
+export interface InvestmentDetail {
+  summary: InvestmentSummary;
+  transactions: InvestmentTransaction[];
+  emis: Emi[];
 }
 
 export interface Folder {
@@ -421,28 +533,35 @@ export const api = {
   // finance
   financeOverview: () => invoke<FinanceOverview>("finance_overview"),
   financeCharts: () => invoke<FinanceCharts>("finance_charts"),
+  categoryList: () => invoke<TransactionCategory[]>("category_list"),
+  categoryCreate: (name: string) => invoke<TransactionCategory>("category_create", { name }),
+  categoryRename: (id: number, name: string) => invoke<void>("category_rename", { id, name }),
+  categoryDelete: (id: number) => invoke<void>("category_delete", { id }),
   accountList: () => invoke<Account[]>("account_list"),
   accountSave: (input: {
     id: number | null;
     name: string;
     kind: AccountKind;
-    balance: number;
+    opening_balance: number;
     notes: string | null;
     person_id: number | null;
     details: AccountDetails;
   }) => invoke<Account>("account_save", { input }),
+  accountRelatedCounts: (id: number) => invoke<Record<string, number>>("account_related_counts", { id }),
   accountDelete: (id: number) => invoke<void>("account_delete", { id }),
   transactionList: (account: number | null, limit: number | null) =>
     invoke<Transaction[]>("transaction_list", { account, limit }),
-  transactionCreate: (input: {
+  transactionSave: (input: {
+    id: number | null;
     account_id: number;
     kind: "expense" | "income";
     amount: number;
     category: string | null;
     description: string | null;
     date: string;
-  }) => invoke<Transaction>("transaction_create", { input }),
+  }) => invoke<Transaction>("transaction_save", { input }),
   transactionDelete: (id: number) => invoke<void>("transaction_delete", { id }),
+  transactionTransfer: (input: TransferInput) => invoke<TransferResult>("transaction_transfer", { input }),
   subscriptionList: () => invoke<Subscription[]>("subscription_list"),
   subscriptionSave: (input: {
     id: number | null;
@@ -467,9 +586,26 @@ export const api = {
     next_due: string;
     active: boolean;
     notes: string | null;
+    investment_id: number | null;
+    settle_account_id: number | null;
   }) => invoke<Emi>("emi_save", { input }),
   emiMarkPaid: (id: number) => invoke<Emi>("emi_mark_paid", { id }),
   emiDelete: (id: number) => invoke<void>("emi_delete", { id }),
+
+  // investments
+  investmentList: () => invoke<InvestmentSummary[]>("investment_list"),
+  investmentDetail: (id: number) => invoke<InvestmentDetail>("investment_detail", { id }),
+  investmentSave: (input: InvestmentInput) => invoke<InvestmentSummary>("investment_save", { input }),
+  investmentRelatedCounts: (id: number) => invoke<Record<string, number>>("investment_related_counts", { id }),
+  investmentDelete: (id: number) => invoke<void>("investment_delete", { id }),
+  investmentTransactionList: (investment: number) =>
+    invoke<InvestmentTransaction[]>("investment_transaction_list", { investment }),
+  investmentTransactionSave: (input: InvestmentTransactionInput) =>
+    invoke<InvestmentTransaction>("investment_transaction_save", { input }),
+  investmentTransactionDelete: (id: number) => invoke<void>("investment_transaction_delete", { id }),
+  rentScheduleSave: (input: RentScheduleInput) => invoke<RentSchedule>("rent_schedule_save", { input }),
+  rentScheduleMarkPaid: (id: number) => invoke<RentSchedule>("rent_schedule_mark_paid", { id }),
+  rentScheduleDelete: (id: number) => invoke<void>("rent_schedule_delete", { id }),
 
   // notes
   folderList: () => invoke<Folder[]>("folder_list"),
@@ -502,4 +638,5 @@ export const api = {
   importBackup: (path: string, password: string) =>
     invoke<Record<string, number>>("import_backup", { path, password }),
   dataFileInfo: () => invoke<Record<string, string>>("data_file_info"),
+  autoBackupRun: () => invoke<string | null>("auto_backup_run"),
 };

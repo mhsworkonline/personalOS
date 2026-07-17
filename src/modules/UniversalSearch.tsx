@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CreditCard,
   FileText,
+  Home,
   KeyRound,
   Landmark,
   MessageSquare,
@@ -29,6 +30,8 @@ const MODULE_META: Record<string, { label: string; icon: React.ReactNode }> = {
   transactions: { label: "Transactions", icon: <Receipt size={14} /> },
   subscriptions: { label: "Subscriptions", icon: <RefreshCcw size={14} /> },
   emis: { label: "EMIs", icon: <CreditCard size={14} /> },
+  investments: { label: "Investments", icon: <Home size={14} /> },
+  investment_transactions: { label: "Investment history", icon: <Receipt size={14} /> },
   notes: { label: "Notes", icon: <StickyNote size={14} /> },
   reminder: { label: "Reminders", icon: <Bell size={14} /> },
   chat: { label: "Workbench chats", icon: <MessageSquare size={14} /> },
@@ -49,6 +52,10 @@ function targetFor(r: SearchResult): NavTarget {
     case "subscriptions":
     case "emis":
       return { view: "finance", recordModule: r.module, recordId: r.record_id };
+    case "investments":
+      return { view: "investments", recordModule: "investments", recordId: r.record_id };
+    case "investment_transactions":
+      return { view: "investments" };
     case "chat":
       return { view: "workbench", recordModule: "chats", recordId: r.record_id };
     case "card":

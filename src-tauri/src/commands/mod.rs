@@ -2,6 +2,7 @@ pub mod auth;
 pub mod backup;
 pub mod documents;
 pub mod finance;
+pub mod investments;
 pub mod notes;
 pub mod people;
 pub mod search;

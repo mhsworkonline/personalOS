@@ -23,6 +23,7 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Home,
   Image as ImageIcon,
   KeyRound,
   Mail,
@@ -448,6 +449,25 @@ function PersonDashboard({
           ))}
         </Section>
 
+        {/* Investments */}
+        <Section
+          title={`Investments (${overview.investments.length})`}
+          icon={<Home size={14} />}
+          empty={overview.investments.length === 0 ? "No properties" : undefined}
+        >
+          {overview.investments.map((inv) => (
+            <button
+              key={inv.id}
+              className="w-full flex items-center gap-2 py-1.5 hover:bg-panel2 rounded-md px-1.5 -mx-1.5 text-left"
+              onClick={() => navigate({ view: "investments", recordModule: "investments", recordId: inv.id })}
+            >
+              <span className="flex-1 truncate">{inv.name}</span>
+              <span className="text-mut text-[12px] capitalize">{inv.status}</span>
+              <span>{fmtMoney(inv.total_purchase, currency)}</span>
+            </button>
+          ))}
+        </Section>
+
         {/* Tasks */}
         <Section
           title={`Tasks (${overview.tasks.filter((t) => !t.done).length} open)`}
@@ -643,6 +663,7 @@ function DocumentEditor({
         expiry_date: expiryDate || null,
         issuing_authority: authority.trim() || null,
         notes: notes.trim() || null,
+        investment_id: saved?.investment_id ?? null,
       });
       setSaved(result);
       toast(saved ? "Document saved" : "Document added — attach scans below");

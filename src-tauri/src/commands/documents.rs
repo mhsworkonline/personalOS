@@ -31,7 +31,7 @@ pub const DOC_TYPES: [&str; 11] = [
 pub const FILE_KINDS: [&str; 3] = ["front", "back", "attachment"];
 const MAX_FILE_BYTES: usize = 25 * 1024 * 1024;
 
-const DOC_COLS: &str = "id, person_id, doc_type, doc_number, name_on_document, issue_date, expiry_date, issuing_authority, notes, created_at, updated_at";
+const DOC_COLS: &str = "id, person_id, doc_type, doc_number, name_on_document, issue_date, expiry_date, issuing_authority, notes, investment_id, created_at, updated_at";
 
 fn doc_from_row(r: &Row) -> rusqlite::Result<Document> {
     Ok(Document {
@@ -44,9 +44,10 @@ fn doc_from_row(r: &Row) -> rusqlite::Result<Document> {
         expiry_date: r.get(6)?,
         issuing_authority: r.get(7)?,
         notes: r.get(8)?,
+        investment_id: r.get(9)?,
         files: Vec::new(),
-        created_at: r.get(9)?,
-        updated_at: r.get(10)?,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
     })
 }
 
@@ -163,19 +164,21 @@ pub fn document_save(state: State<'_, AppState>, input: DocumentInput) -> Result
                 conn.execute(
                     "UPDATE documents SET person_id = ?1, doc_type = ?2, doc_number = ?3,
                      name_on_document = ?4, issue_date = ?5, expiry_date = ?6,
-                     issuing_authority = ?7, notes = ?8, updated_at = ?9 WHERE id = ?10",
+                     issuing_authority = ?7, notes = ?8, investment_id = ?9, updated_at = ?10 WHERE id = ?11",
                     params![input.person_id, input.doc_type, input.doc_number, input.name_on_document,
-                            input.issue_date, input.expiry_date, input.issuing_authority, input.notes, now, id],
+                            input.issue_date, input.expiry_date, input.issuing_authority, input.notes,
+                            input.investment_id, now, id],
                 )
                 .map_err(|e| e.to_string())?;
                 id
             }
             None => {
                 conn.execute(
-                    "INSERT INTO documents (person_id, doc_type, doc_number, name_on_document, issue_date, expiry_date, issuing_authority, notes, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    "INSERT INTO documents (person_id, doc_type, doc_number, name_on_document, issue_date, expiry_date, issuing_authority, notes, investment_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
                     params![input.person_id, input.doc_type, input.doc_number, input.name_on_document,
-                            input.issue_date, input.expiry_date, input.issuing_authority, input.notes, now],
+                            input.issue_date, input.expiry_date, input.issuing_authority, input.notes,
+                            input.investment_id, now],
                 )
                 .map_err(|e| e.to_string())?;
                 conn.last_insert_rowid()

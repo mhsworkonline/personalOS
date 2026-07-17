@@ -71,12 +71,18 @@ pub fn run() {
             commands::vault::vault_delete,
             commands::finance::finance_overview,
             commands::finance::finance_charts,
+            commands::finance::category_list,
+            commands::finance::category_create,
+            commands::finance::category_rename,
+            commands::finance::category_delete,
             commands::finance::account_list,
             commands::finance::account_save,
+            commands::finance::account_related_counts,
             commands::finance::account_delete,
             commands::finance::transaction_list,
-            commands::finance::transaction_create,
+            commands::finance::transaction_save,
             commands::finance::transaction_delete,
+            commands::finance::transaction_transfer,
             commands::finance::subscription_list,
             commands::finance::subscription_save,
             commands::finance::subscription_advance,
@@ -85,6 +91,17 @@ pub fn run() {
             commands::finance::emi_save,
             commands::finance::emi_mark_paid,
             commands::finance::emi_delete,
+            commands::investments::investment_list,
+            commands::investments::investment_detail,
+            commands::investments::investment_save,
+            commands::investments::investment_related_counts,
+            commands::investments::investment_delete,
+            commands::investments::investment_transaction_list,
+            commands::investments::investment_transaction_save,
+            commands::investments::investment_transaction_delete,
+            commands::investments::rent_schedule_save,
+            commands::investments::rent_schedule_mark_paid,
+            commands::investments::rent_schedule_delete,
             commands::notes::folder_list,
             commands::notes::folder_create,
             commands::notes::folder_rename,
@@ -101,6 +118,7 @@ pub fn run() {
             commands::backup::export_backup,
             commands::backup::import_backup,
             commands::backup::data_file_info,
+            commands::backup::auto_backup_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PersonalOS");
@@ -235,6 +253,16 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(txs, 1);
+        // Opening balance is backfilled from the v1 balance minus the net
+        // effect of transactions already recorded, so the live balance the
+        // user sees doesn't jump: 48800 balance - (-1200 expense) = 50000.
+        let (balance, opening): (f64, f64) = conn
+            .query_row("SELECT balance, opening_balance FROM accounts WHERE name = 'HDFC Savings'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(balance, 48800.0);
+        assert_eq!(opening, 50000.0);
         // Secrets untouched by migration.
         let secret: String = conn
             .query_row("SELECT json_extract(fields, '$.password') FROM vault_items", [], |r| r.get(0))

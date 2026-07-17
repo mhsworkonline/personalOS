@@ -42,6 +42,7 @@ export default function Settings({
   const [autoLock, setAutoLock] = useState(settings.auto_lock_minutes ?? "5");
   const [currency, setCurrency] = useState(settings.currency_symbol ?? "$");
   const [startOnWorkbench, setStartOnWorkbench] = useState(settings.start_on_workbench === "1");
+  const [autoBackup, setAutoBackup] = useState(settings.auto_backup_enabled !== "0");
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [changePw, setChangePw] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -52,6 +53,7 @@ export default function Settings({
     setAutoLock(settings.auto_lock_minutes ?? "5");
     setCurrency(settings.currency_symbol ?? "$");
     setStartOnWorkbench(settings.start_on_workbench === "1");
+    setAutoBackup(settings.auto_backup_enabled !== "0");
   }, [settings]);
 
   useEffect(() => {
@@ -137,7 +139,7 @@ export default function Settings({
             Exports every record as one file encrypted with a password you choose (Argon2id +
             XChaCha20-Poly1305). Restoring <b className="text-warn">replaces all current data</b>.
           </p>
-          <div className="flex gap-2">
+          <div className="flex gap-2 mb-3">
             <button className="btn-edge" onClick={() => setExportOpen(true)}>
               <DownloadCloud size={14} /> Export backup…
             </button>
@@ -145,6 +147,20 @@ export default function Settings({
               <UploadCloud size={14} /> Restore backup…
             </button>
           </div>
+          <label className="flex items-center gap-2 text-[13px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoBackup}
+              onChange={(e) => {
+                setAutoBackup(e.target.checked);
+                setSetting("auto_backup_enabled", e.target.checked ? "1" : "0");
+              }}
+            />
+            Automatic daily backup (encrypted copy kept under the app's data folder)
+          </label>
+          {settings.last_auto_backup && (
+            <div className="text-mut text-[11.5px] mt-1">Last automatic backup: {settings.last_auto_backup}</div>
+          )}
         </section>
 
         {/* Shortcuts */}

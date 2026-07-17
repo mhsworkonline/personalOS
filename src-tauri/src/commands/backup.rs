@@ -16,14 +16,19 @@ use std::collections::HashMap;
 use tauri::State;
 
 /// Insert order respects foreign keys; deletes run in reverse.
-/// `persons` first — nearly everything references it.
-const TABLES: [&str; 17] = [
+/// `persons` first — nearly everything references it; `investments` before
+/// `documents` since a document may reference its property.
+const TABLES: [&str; 21] = [
     "settings",
     "persons",
+    "investments",
+    "investment_transactions",
+    "investment_rent_schedules",
     "tasks",
     "quick_notes",
     "vault_items",
     "accounts",
+    "transaction_categories",
     "transactions",
     "subscriptions",
     "emis",
@@ -182,6 +187,66 @@ pub fn import_backup(
         crate::db::rebuild_search_index(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(counts)
+    })
+}
+
+const AUTO_BACKUP_KEEP: usize = 7;
+
+/// Local daily backup, no password prompt: checkpoints the WAL into the main
+/// db file, then copies that file (still SQLCipher-encrypted under the same
+/// master password — never plaintext) into `<data_dir>/backups/`. Runs at
+/// most once per calendar day; keeps the last `AUTO_BACKUP_KEEP` copies.
+/// Controlled by the `auto_backup_enabled` setting (default on).
+#[tauri::command]
+pub fn auto_backup_run(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    with_db(&state, |conn| {
+        let enabled: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'auto_backup_enabled'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "1".into());
+        if enabled == "0" {
+            return Ok(None);
+        }
+        let today = crate::db::today();
+        let last: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'last_auto_backup'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if last.as_deref() == Some(today.as_str()) {
+            return Ok(None);
+        }
+
+        let dir = state.data_dir.join("backups");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let dest = dir.join(format!("auto-{today}.db"));
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("Checkpoint failed: {e}"))?;
+        std::fs::copy(state.db_path(), &dest).map_err(|e| format!("Auto backup failed: {e}"))?;
+
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('last_auto_backup', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![today],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("auto-"))
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+        while files.len() > AUTO_BACKUP_KEEP {
+            let f = files.remove(0);
+            let _ = std::fs::remove_file(f.path());
+        }
+        Ok(Some(dest.to_string_lossy().to_string()))
     })
 }
 

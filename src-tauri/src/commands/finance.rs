@@ -9,10 +9,12 @@ use super::with_db;
 use crate::db::{self, advance_date, index_record, log_activity, sync_timeline, unindex_record};
 use crate::models::{
     Account, AccountInput, CategorySpend, Emi, EmiInput, FinanceCharts, FinanceOverview, KindTotal,
-    MonthlyFlow, Subscription, SubscriptionInput, Transaction, TransactionInput,
+    MonthlyFlow, Subscription, SubscriptionInput, Transaction, TransactionCategory, TransactionInput,
+    TransferInput, TransferResult,
 };
 use crate::AppState;
 use rusqlite::{params, Connection, Row};
+use std::collections::HashMap;
 use tauri::State;
 
 pub const ACCOUNT_KINDS: [&str; 4] = ["bank", "cash", "credit_card", "investment"];
@@ -21,25 +23,87 @@ pub const ACCOUNT_KINDS: [&str; 4] = ["bank", "cash", "credit_card", "investment
 const FORBIDDEN_DETAIL_KEYS: [&str; 6] = ["cvv", "atm_pin", "upi_pin", "otp", "pin_atm", "card_pin"];
 
 // ---------------------------------------------------------------------------
+// Transaction categories (managed pick-list; transactions.category stays a
+// plain TEXT column, so deleting a category never touches past entries)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn category_list(state: State<'_, AppState>) -> Result<Vec<TransactionCategory>, String> {
+    with_db(&state, |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM transaction_categories ORDER BY name COLLATE NOCASE")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(TransactionCategory { id: r.get(0)?, name: r.get(1)? }))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    })
+}
+
+#[tauri::command]
+pub fn category_create(state: State<'_, AppState>, name: String) -> Result<TransactionCategory, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Category name must not be empty".into());
+    }
+    with_db(&state, |conn| {
+        conn.execute(
+            "INSERT INTO transaction_categories (name, created_at) VALUES (?1, ?2)",
+            params![name, db::now()],
+        )
+        .map_err(|_| "A category with that name already exists".to_string())?;
+        Ok(TransactionCategory { id: conn.last_insert_rowid(), name })
+    })
+}
+
+#[tauri::command]
+pub fn category_rename(state: State<'_, AppState>, id: i64, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Category name must not be empty".into());
+    }
+    with_db(&state, |conn| {
+        conn.execute("UPDATE transaction_categories SET name = ?1 WHERE id = ?2", params![name, id])
+            .map_err(|_| "A category with that name already exists".to_string())?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn category_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    with_db(&state, |conn| {
+        // Past transactions keep their stored category text unchanged — it's
+        // a plain column, not a foreign key.
+        conn.execute("DELETE FROM transaction_categories WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Accounts
 // ---------------------------------------------------------------------------
 
 fn account_from_row(r: &Row) -> rusqlite::Result<Account> {
-    let details_raw: String = r.get(6)?;
+    let details_raw: String = r.get(7)?;
     Ok(Account {
         id: r.get(0)?,
         name: r.get(1)?,
         kind: r.get(2)?,
         balance: r.get(3)?,
-        notes: r.get(4)?,
-        person_id: r.get(5)?,
+        opening_balance: r.get(4)?,
+        notes: r.get(5)?,
+        person_id: r.get(6)?,
         details: serde_json::from_str(&details_raw).unwrap_or(serde_json::json!({})),
-        created_at: r.get(7)?,
-        updated_at: r.get(8)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
     })
 }
 
-const ACCOUNT_COLS: &str = "id, name, kind, balance, notes, person_id, details, created_at, updated_at";
+const ACCOUNT_COLS: &str =
+    "id, name, kind, balance, opening_balance, notes, person_id, details, created_at, updated_at";
 
 pub fn accounts_for(conn: &Connection, person: Option<i64>) -> Result<Vec<Account>, String> {
     let sql = match person {
@@ -108,19 +172,32 @@ pub fn account_save(state: State<'_, AppState>, input: AccountInput) -> Result<A
         };
         let id = match input.id {
             Some(id) => {
+                // Editing the opening balance shifts the live balance by the
+                // same delta rather than replacing it outright, so every
+                // transaction recorded since account creation stays intact.
+                let (old_balance, old_opening): (f64, f64) = conn
+                    .query_row(
+                        "SELECT balance, opening_balance FROM accounts WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|_| "Account not found".to_string())?;
+                let new_balance = old_balance + (input.opening_balance - old_opening);
                 conn.execute(
-                    "UPDATE accounts SET name = ?1, kind = ?2, balance = ?3, notes = ?4,
-                     person_id = ?5, details = ?6, updated_at = ?7 WHERE id = ?8",
-                    params![name, input.kind, input.balance, input.notes, person_id, details_raw, now, id],
+                    "UPDATE accounts SET name = ?1, kind = ?2, balance = ?3, opening_balance = ?4,
+                     notes = ?5, person_id = ?6, details = ?7, updated_at = ?8 WHERE id = ?9",
+                    params![name, input.kind, new_balance, input.opening_balance, input.notes, person_id, details_raw, now, id],
                 )
                 .map_err(|e| e.to_string())?;
                 id
             }
             None => {
+                // A brand-new account has no transactions yet, so its live
+                // balance starts out equal to the opening balance.
                 conn.execute(
-                    "INSERT INTO accounts (name, kind, balance, notes, person_id, details, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                    params![name, input.kind, input.balance, input.notes, person_id, details_raw, now],
+                    "INSERT INTO accounts (name, kind, balance, opening_balance, notes, person_id, details, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    params![name, input.kind, input.opening_balance, input.notes, person_id, details_raw, now],
                 )
                 .map_err(|e| e.to_string())?;
                 conn.last_insert_rowid()
@@ -162,26 +239,80 @@ pub fn account_save(state: State<'_, AppState>, input: AccountInput) -> Result<A
     })
 }
 
+/// What deleting this account would affect, so the UI can show an impact
+/// summary before the user confirms (mirrors `investments::investment_related_counts`).
+#[tauri::command]
+pub fn account_related_counts(state: State<'_, AppState>, id: i64) -> Result<HashMap<String, i64>, String> {
+    with_db(&state, |conn| {
+        let mut out = HashMap::new();
+        for (label, sql) in [
+            ("transactions", "SELECT COUNT(*) FROM transactions WHERE account_id = ?1"),
+            ("investment_transactions", "SELECT COUNT(*) FROM investment_transactions WHERE settle_account_id = ?1"),
+            ("rent_schedules", "SELECT COUNT(*) FROM investment_rent_schedules WHERE settle_account_id = ?1"),
+            ("emis", "SELECT COUNT(*) FROM emis WHERE settle_account_id = ?1"),
+        ] {
+            let n: i64 = conn.query_row(sql, params![id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            if n > 0 {
+                out.insert(label.to_string(), n);
+            }
+        }
+        Ok(out)
+    })
+}
+
 #[tauri::command]
 pub fn account_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| {
-        let name: Option<String> = conn
-            .query_row("SELECT name FROM accounts WHERE id = ?1", params![id], |r| r.get(0))
-            .ok();
-        conn.execute(
-            "DELETE FROM search_index WHERE module = 'transactions'
-             AND record_id IN (SELECT id FROM transactions WHERE account_id = ?1)",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+    with_db(&state, |conn| delete_account(conn, id))
+}
+
+fn delete_account(conn: &Connection, id: i64) -> Result<(), String> {
+    let name: Option<String> = conn
+        .query_row("SELECT name FROM accounts WHERE id = ?1", params![id], |r| r.get(0))
+        .ok();
+
+    // Delete this account's own transactions through the shared helper
+    // (not a bare cascade) so any investment_transactions.linked_transaction_id
+    // references and transfer peers (which may belong to another account)
+    // are cleared safely first.
+    let tx_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM transactions WHERE account_id = ?1")
             .map_err(|e| e.to_string())?;
-        unindex_record(conn, "accounts", id)?;
-        if let Some(n) = name {
-            log_activity(conn, "finance", "deleted account", &n, None)?;
+        let rows = stmt
+            .query_map(params![id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    for tx_id in tx_ids {
+        if let Some(peer_id) = delete_transaction_row(conn, tx_id)? {
+            delete_transaction_row(conn, peer_id)?;
         }
-        Ok(())
-    })
+    }
+
+    // Detach investment/rent/EMI records that settled via this account —
+    // their own history stays, they just lose the "via account" link.
+    conn.execute(
+        "UPDATE investment_transactions SET settle_account_id = NULL WHERE settle_account_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE investment_rent_schedules SET settle_account_id = NULL WHERE settle_account_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE emis SET settle_account_id = NULL WHERE settle_account_id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    unindex_record(conn, "accounts", id)?;
+    if let Some(n) = name {
+        log_activity(conn, "finance", "deleted account", &n, None)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -198,13 +329,108 @@ fn tx_from_row(r: &Row) -> rusqlite::Result<Transaction> {
         category: r.get(5)?,
         description: r.get(6)?,
         date: r.get(7)?,
-        created_at: r.get(8)?,
+        transfer_peer_id: r.get(8)?,
+        created_at: r.get(9)?,
     })
 }
 
 const TX_SELECT: &str = "SELECT t.id, t.account_id, a.name, t.kind, t.amount, t.category,
-    t.description, t.date, t.created_at
+    t.description, t.date, t.transfer_peer_id, t.created_at
     FROM transactions t JOIN accounts a ON a.id = t.account_id";
+
+fn tx_title(tx: &Transaction) -> String {
+    tx.description
+        .clone()
+        .unwrap_or_else(|| format!("{} {}", tx.kind, tx.category.as_deref().unwrap_or("transaction")))
+}
+
+/// Insert one transaction row, adjust its account's balance, and index it.
+/// Shared by manual entry (`transaction_create`), transfers between accounts,
+/// and investment settlements (rent received / sale proceeds / purchase paid
+/// from an account) — every real money movement goes through here so account
+/// balances (in particular "cash on hand") stay correct from one place.
+pub fn record_transaction(
+    conn: &Connection,
+    account_id: i64,
+    kind: &str,
+    amount: f64,
+    category: Option<&str>,
+    description: Option<&str>,
+    date: &str,
+    transfer_peer_id: Option<i64>,
+) -> Result<Transaction, String> {
+    let now = db::now();
+    conn.execute(
+        "INSERT INTO transactions (account_id, kind, amount, category, description, date, transfer_peer_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![account_id, kind, amount, category, description, date, transfer_peer_id, now],
+    )
+    .map_err(|e| format!("Cannot add transaction: {e}"))?;
+    let id = conn.last_insert_rowid();
+    let delta = if kind == "expense" || kind == "transfer_out" { -amount } else { amount };
+    conn.execute(
+        "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
+        params![delta, now, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let tx = conn
+        .query_row(&format!("{TX_SELECT} WHERE t.id = ?1"), params![id], tx_from_row)
+        .map_err(|e| e.to_string())?;
+    let person: Option<i64> = conn
+        .query_row("SELECT person_id FROM accounts WHERE id = ?1", params![account_id], |r| r.get(0))
+        .unwrap_or(None);
+    index_record(
+        conn,
+        "transactions",
+        id,
+        &tx_title(&tx),
+        &format!("{} {}", tx.category.as_deref().unwrap_or(""), tx.account_name),
+        person,
+    )?;
+    Ok(tx)
+}
+
+/// Reverse the balance effect of one transaction row, delete it, and drop it
+/// from the search index. Returns its `transfer_peer_id`, if any, so the
+/// caller can decide whether to remove the paired leg of a transfer too.
+pub fn delete_transaction_row(conn: &Connection, id: i64) -> Result<Option<i64>, String> {
+    let row: Option<(i64, String, f64, Option<i64>)> = conn
+        .query_row(
+            "SELECT account_id, kind, amount, transfer_peer_id FROM transactions WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok();
+    let Some((account_id, kind, amount, transfer_peer_id)) = row else {
+        return Ok(None);
+    };
+    let delta = if kind == "expense" || kind == "transfer_out" { amount } else { -amount };
+    conn.execute(
+        "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
+        params![delta, db::now(), account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    // investment_transactions.linked_transaction_id points at rows here with
+    // no ON DELETE action — clear the reference first or this delete trips
+    // the foreign key whenever a settled investment transaction is involved.
+    conn.execute(
+        "UPDATE investment_transactions SET linked_transaction_id = NULL WHERE linked_transaction_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    // The other leg of a transfer points its own transfer_peer_id back at
+    // this row (same self-referential FK, no ON DELETE action) — clear that
+    // too or deleting either leg of a transfer trips the foreign key.
+    conn.execute(
+        "UPDATE transactions SET transfer_peer_id = NULL WHERE transfer_peer_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM transactions WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    unindex_record(conn, "transactions", id)?;
+    Ok(transfer_peer_id)
+}
 
 #[tauri::command]
 pub fn transaction_list(
@@ -235,8 +461,11 @@ pub fn transaction_list(
     })
 }
 
+/// Create or edit a manual transaction. Transfer legs (which carry a
+/// `transfer_peer_id`) can't be edited here — delete and recreate them via
+/// `transaction_transfer` instead, since editing one leg would desync the pair.
 #[tauri::command]
-pub fn transaction_create(
+pub fn transaction_save(
     state: State<'_, AppState>,
     input: TransactionInput,
 ) -> Result<Transaction, String> {
@@ -249,42 +478,71 @@ pub fn transaction_create(
     chrono::NaiveDate::parse_from_str(&input.date, "%Y-%m-%d")
         .map_err(|_| "Date must be YYYY-MM-DD".to_string())?;
     with_db(&state, |conn| {
-        let now = db::now();
-        conn.execute(
-            "INSERT INTO transactions (account_id, kind, amount, category, description, date, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![input.account_id, input.kind, input.amount, input.category, input.description, input.date, now],
-        )
-        .map_err(|e| format!("Cannot add transaction: {e}"))?;
-        let id = conn.last_insert_rowid();
-        let delta = if input.kind == "expense" { -input.amount } else { input.amount };
-        conn.execute(
-            "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
-            params![delta, now, input.account_id],
-        )
-        .map_err(|e| e.to_string())?;
-        let tx = conn
-            .query_row(&format!("{TX_SELECT} WHERE t.id = ?1"), params![id], tx_from_row)
-            .map_err(|e| e.to_string())?;
-        let person: Option<i64> = conn
-            .query_row(
-                "SELECT person_id FROM accounts WHERE id = ?1",
-                params![input.account_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(None);
-        let title = tx.description.clone().unwrap_or_else(|| {
-            format!("{} {}", tx.kind, tx.category.as_deref().unwrap_or("transaction"))
-        });
-        index_record(
+        let tx = match input.id {
+            Some(id) => {
+                let (old_account, old_kind, old_amount, transfer_peer): (i64, String, f64, Option<i64>) = conn
+                    .query_row(
+                        "SELECT account_id, kind, amount, transfer_peer_id FROM transactions WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .map_err(|_| "Transaction not found".to_string())?;
+                if transfer_peer.is_some() {
+                    return Err("Transfers can't be edited — delete and recreate them instead".into());
+                }
+                let now = db::now();
+                let reverse_delta = if old_kind == "expense" { old_amount } else { -old_amount };
+                conn.execute(
+                    "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
+                    params![reverse_delta, now, old_account],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE transactions SET account_id = ?1, kind = ?2, amount = ?3, category = ?4,
+                     description = ?5, date = ?6 WHERE id = ?7",
+                    params![input.account_id, input.kind, input.amount, input.category, input.description, input.date, id],
+                )
+                .map_err(|e| e.to_string())?;
+                let new_delta = if input.kind == "expense" { -input.amount } else { input.amount };
+                conn.execute(
+                    "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
+                    params![new_delta, now, input.account_id],
+                )
+                .map_err(|e| e.to_string())?;
+                let tx = conn
+                    .query_row(&format!("{TX_SELECT} WHERE t.id = ?1"), params![id], tx_from_row)
+                    .map_err(|e| e.to_string())?;
+                let person: Option<i64> = conn
+                    .query_row("SELECT person_id FROM accounts WHERE id = ?1", params![input.account_id], |r| r.get(0))
+                    .unwrap_or(None);
+                index_record(
+                    conn,
+                    "transactions",
+                    id,
+                    &tx_title(&tx),
+                    &format!("{} {}", tx.category.as_deref().unwrap_or(""), tx.account_name),
+                    person,
+                )?;
+                tx
+            }
+            None => record_transaction(
+                conn,
+                input.account_id,
+                &input.kind,
+                input.amount,
+                input.category.as_deref(),
+                input.description.as_deref(),
+                &input.date,
+                None,
+            )?,
+        };
+        log_activity(
             conn,
-            "transactions",
-            id,
-            &title,
-            &format!("{} {}", tx.category.as_deref().unwrap_or(""), tx.account_name),
-            person,
+            "finance",
+            if input.id.is_some() { "updated transaction" } else { "transaction" },
+            &tx_title(&tx),
+            Some(tx.id),
         )?;
-        log_activity(conn, "finance", "transaction", &title, Some(id))?;
         Ok(tx)
     })
 }
@@ -292,24 +550,70 @@ pub fn transaction_create(
 #[tauri::command]
 pub fn transaction_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |conn| {
-        let row: Option<(i64, String, f64)> = conn
-            .query_row(
-                "SELECT account_id, kind, amount FROM transactions WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .ok();
-        if let Some((account_id, kind, amount)) = row {
-            let delta = if kind == "expense" { amount } else { -amount };
-            conn.execute(
-                "UPDATE accounts SET balance = balance + ?1, updated_at = ?2 WHERE id = ?3",
-                params![delta, db::now(), account_id],
-            )
-            .map_err(|e| e.to_string())?;
+        if let Some(peer_id) = delete_transaction_row(conn, id)? {
+            delete_transaction_row(conn, peer_id)?;
         }
-        conn.execute("DELETE FROM transactions WHERE id = ?1", params![id])
+        Ok(())
+    })
+}
+
+/// Move money between two accounts (e.g. a cash withdrawal from a bank
+/// account). Creates a linked pair of transactions so both balances move
+/// atomically; excluded from income/expense totals since nothing was earned
+/// or spent — it's the same money, just in a different place.
+#[tauri::command]
+pub fn transaction_transfer(
+    state: State<'_, AppState>,
+    input: TransferInput,
+) -> Result<TransferResult, String> {
+    if input.amount <= 0.0 {
+        return Err("Amount must be positive".into());
+    }
+    if input.from_account_id == input.to_account_id {
+        return Err("Choose two different accounts".into());
+    }
+    chrono::NaiveDate::parse_from_str(&input.date, "%Y-%m-%d")
+        .map_err(|_| "Date must be YYYY-MM-DD".to_string())?;
+    with_db(&state, |conn| {
+        let from_name: String = conn
+            .query_row("SELECT name FROM accounts WHERE id = ?1", params![input.from_account_id], |r| r.get(0))
+            .map_err(|_| "Source account not found".to_string())?;
+        let to_name: String = conn
+            .query_row("SELECT name FROM accounts WHERE id = ?1", params![input.to_account_id], |r| r.get(0))
+            .map_err(|_| "Destination account not found".to_string())?;
+        let suffix = input.notes.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+
+        let debit = record_transaction(
+            conn,
+            input.from_account_id,
+            "transfer_out",
+            input.amount,
+            Some("Transfer"),
+            Some(&format!("Transfer to {to_name}{suffix}")),
+            &input.date,
+            None,
+        )?;
+        let credit = record_transaction(
+            conn,
+            input.to_account_id,
+            "transfer_in",
+            input.amount,
+            Some("Transfer"),
+            Some(&format!("Transfer from {from_name}{suffix}")),
+            &input.date,
+            Some(debit.id),
+        )?;
+        conn.execute(
+            "UPDATE transactions SET transfer_peer_id = ?1 WHERE id = ?2",
+            params![credit.id, debit.id],
+        )
+        .map_err(|e| e.to_string())?;
+        let debit = conn
+            .query_row(&format!("{TX_SELECT} WHERE t.id = ?1"), params![debit.id], tx_from_row)
             .map_err(|e| e.to_string())?;
-        unindex_record(conn, "transactions", id)
+
+        log_activity(conn, "finance", "transfer", &format!("{from_name} → {to_name}"), Some(debit.id))?;
+        Ok(TransferResult { debit, credit })
     })
 }
 
@@ -495,13 +799,30 @@ fn emi_from_row(r: &Row) -> rusqlite::Result<Emi> {
         next_due: r.get(6)?,
         active: r.get(7)?,
         notes: r.get(8)?,
-        created_at: r.get(9)?,
-        updated_at: r.get(10)?,
+        investment_id: r.get(9)?,
+        settle_account_id: r.get(10)?,
+        created_at: r.get(11)?,
+        updated_at: r.get(12)?,
     })
 }
 
-const EMI_COLS: &str =
-    "id, name, lender, monthly_amount, total_months, months_paid, next_due, active, notes, created_at, updated_at";
+const EMI_COLS: &str = "id, name, lender, monthly_amount, total_months, months_paid, next_due, active, notes,
+    investment_id, settle_account_id, created_at, updated_at";
+
+/// EMIs financing a given property (shown on its detail page).
+pub fn emis_for_investment(conn: &Connection, investment_id: i64) -> Result<Vec<Emi>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {EMI_COLS} FROM emis WHERE investment_id = ?1 ORDER BY active DESC, next_due ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![investment_id], emi_from_row)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
 
 fn sync_emi(conn: &Connection, emi: &Emi) -> Result<(), String> {
     let date = if emi.active && emi.months_paid < emi.total_months {
@@ -558,19 +879,22 @@ pub fn emi_save(state: State<'_, AppState>, input: EmiInput) -> Result<Emi, Stri
             Some(id) => {
                 conn.execute(
                     "UPDATE emis SET name = ?1, lender = ?2, monthly_amount = ?3, total_months = ?4,
-                     months_paid = ?5, next_due = ?6, active = ?7, notes = ?8, updated_at = ?9 WHERE id = ?10",
+                     months_paid = ?5, next_due = ?6, active = ?7, notes = ?8, investment_id = ?9,
+                     settle_account_id = ?10, updated_at = ?11 WHERE id = ?12",
                     params![name, input.lender, input.monthly_amount, input.total_months,
-                            input.months_paid, input.next_due, input.active, input.notes, now, id],
+                            input.months_paid, input.next_due, input.active, input.notes,
+                            input.investment_id, input.settle_account_id, now, id],
                 )
                 .map_err(|e| e.to_string())?;
                 id
             }
             None => {
                 conn.execute(
-                    "INSERT INTO emis (name, lender, monthly_amount, total_months, months_paid, next_due, active, notes, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    "INSERT INTO emis (name, lender, monthly_amount, total_months, months_paid, next_due, active, notes, investment_id, settle_account_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
                     params![name, input.lender, input.monthly_amount, input.total_months,
-                            input.months_paid, input.next_due, input.active, input.notes, now],
+                            input.months_paid, input.next_due, input.active, input.notes,
+                            input.investment_id, input.settle_account_id, now],
                 )
                 .map_err(|e| e.to_string())?;
                 conn.last_insert_rowid()
@@ -625,6 +949,48 @@ pub fn emi_mark_paid(state: State<'_, AppState>, id: i64) -> Result<Emi, String>
             params![months_paid, next_due, !finished, db::now(), id],
         )
         .map_err(|e| e.to_string())?;
+
+        // A loan financing a property logs each payment against it, settling
+        // to an account if one is set — same "keeps cash on hand correct"
+        // treatment as everything else in Finance/Investments.
+        if let Some(investment_id) = emi.investment_id {
+            let (inv_name, person_id): (String, Option<i64>) = conn
+                .query_row(
+                    "SELECT name, person_id FROM investments WHERE id = ?1",
+                    params![investment_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            let today = db::today();
+            let title = format!("EMI payment — {inv_name}");
+            let linked_transaction_id = match emi.settle_account_id {
+                Some(account_id) => Some(
+                    record_transaction(
+                        conn,
+                        account_id,
+                        "expense",
+                        emi.monthly_amount,
+                        Some("EMI"),
+                        Some(&title),
+                        &today,
+                        None,
+                    )?
+                    .id,
+                ),
+                None => None,
+            };
+            let now = db::now();
+            conn.execute(
+                "INSERT INTO investment_transactions
+                 (investment_id, kind, amount, date, counterparty, notes, settle_account_id, linked_transaction_id, created_at)
+                 VALUES (?1, 'expense', ?2, ?3, ?4, 'EMI payment', ?5, ?6, ?7)",
+                params![investment_id, emi.monthly_amount, today, emi.lender, emi.settle_account_id, linked_transaction_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+            let tx_id = conn.last_insert_rowid();
+            index_record(conn, "investment_transactions", tx_id, &title, emi.lender.as_deref().unwrap_or(""), person_id)?;
+        }
+
         let emi = conn
             .query_row(
                 &format!("SELECT {EMI_COLS} FROM emis WHERE id = ?1"),
@@ -803,4 +1169,79 @@ pub fn finance_charts(state: State<'_, AppState>) -> Result<FinanceCharts, Strin
 
         Ok(FinanceCharts { monthly, categories })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{crypto, db};
+
+    fn open_fresh(dir: &std::path::Path) -> Connection {
+        let meta = crypto::new_meta();
+        let key = crypto::derive_key("password123", &meta.kdf).unwrap();
+        let conn = db::open_encrypted(&dir.join("test.db"), &key).unwrap();
+        db::ensure_schema(&conn).unwrap();
+        conn
+    }
+
+    fn make_account(conn: &Connection, name: &str, kind: &str, balance: f64, person: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO accounts (name, kind, balance, person_id, details, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, '{}', '2026-01-01', '2026-01-01')",
+            params![name, kind, balance, person],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Same operations `transaction_transfer` performs: a cash withdrawal
+    /// from a bank account must decrease the bank and increase Cash on hand
+    /// in the same step, and deleting either leg must reverse both.
+    #[test]
+    fn cash_withdrawal_transfer_updates_both_balances_and_reverses_on_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_fresh(dir.path());
+        let me: i64 = conn
+            .query_row("SELECT id FROM persons WHERE is_default = 1", [], |r| r.get(0))
+            .unwrap();
+
+        let bank = make_account(&conn, "HDFC", "bank", 50000.0, me);
+        let cash = make_account(&conn, "Cash", "cash", 0.0, me);
+
+        let debit = record_transaction(
+            &conn, bank, "transfer_out", 5000.0, Some("Transfer"), Some("Transfer to Cash"), "2026-02-01", None,
+        )
+        .unwrap();
+        let credit = record_transaction(
+            &conn, cash, "transfer_in", 5000.0, Some("Transfer"), Some("Transfer from HDFC"), "2026-02-01", Some(debit.id),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE transactions SET transfer_peer_id = ?1 WHERE id = ?2",
+            params![credit.id, debit.id],
+        )
+        .unwrap();
+
+        let bank_balance: f64 = conn
+            .query_row("SELECT balance FROM accounts WHERE id = ?1", params![bank], |r| r.get(0))
+            .unwrap();
+        let cash_balance: f64 = conn
+            .query_row("SELECT balance FROM accounts WHERE id = ?1", params![cash], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bank_balance, 45000.0);
+        assert_eq!(cash_balance, 5000.0);
+
+        let peer = delete_transaction_row(&conn, debit.id).unwrap();
+        assert_eq!(peer, Some(credit.id));
+        delete_transaction_row(&conn, peer.unwrap()).unwrap();
+
+        let bank_balance: f64 = conn
+            .query_row("SELECT balance FROM accounts WHERE id = ?1", params![bank], |r| r.get(0))
+            .unwrap();
+        let cash_balance: f64 = conn
+            .query_row("SELECT balance FROM accounts WHERE id = ?1", params![cash], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bank_balance, 50000.0);
+        assert_eq!(cash_balance, 0.0);
+    }
 }

@@ -45,6 +45,7 @@ pub struct Document {
     pub expiry_date: Option<String>,
     pub issuing_authority: Option<String>,
     pub notes: Option<String>,
+    pub investment_id: Option<i64>,
     pub files: Vec<DocumentFileMeta>,
     pub created_at: String,
     pub updated_at: String,
@@ -61,6 +62,7 @@ pub struct DocumentInput {
     pub expiry_date: Option<String>,
     pub issuing_authority: Option<String>,
     pub notes: Option<String>,
+    pub investment_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -83,6 +85,7 @@ pub struct PersonOverview {
     pub vault: Vec<VaultItemMeta>,
     pub notes: Vec<NoteMeta>,
     pub subscriptions: Vec<Subscription>,
+    pub investments: Vec<InvestmentSummary>,
     pub tasks: Vec<Task>,
     pub timeline: Vec<TimelineEvent>,
 }
@@ -161,6 +164,10 @@ pub struct Account {
     pub name: String,
     pub kind: String,
     pub balance: f64,
+    /// Fixed reference point the live `balance` is computed forward from
+    /// (opening_balance + net of every transaction). Editable any time with
+    /// no transaction of its own — there's no way to enter years of history.
+    pub opening_balance: f64,
     pub notes: Option<String>,
     pub person_id: Option<i64>,
     /// Bank-specific structured data (branch, IFSC, net-banking credentials,
@@ -176,7 +183,7 @@ pub struct AccountInput {
     pub id: Option<i64>,
     pub name: String,
     pub kind: String,
-    pub balance: f64,
+    pub opening_balance: f64,
     pub notes: Option<String>,
     pub person_id: Option<i64>,
     pub details: serde_json::Value,
@@ -192,17 +199,37 @@ pub struct Transaction {
     pub category: Option<String>,
     pub description: Option<String>,
     pub date: String,
+    pub transfer_peer_id: Option<i64>,
     pub created_at: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TransactionInput {
+    pub id: Option<i64>,
     pub account_id: i64,
     pub kind: String, // "expense" | "income"
     pub amount: f64,
     pub category: Option<String>,
     pub description: Option<String>,
     pub date: String,
+}
+
+/// Move money between two Finance accounts (e.g. a cash withdrawal from a
+/// bank account). Creates a linked pair of transactions — excluded from
+/// income/expense totals, since no money was actually earned or spent.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TransferInput {
+    pub from_account_id: i64,
+    pub to_account_id: i64,
+    pub amount: f64,
+    pub date: String,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TransferResult {
+    pub debit: Transaction,
+    pub credit: Transaction,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -242,6 +269,11 @@ pub struct Emi {
     pub next_due: String,
     pub active: bool,
     pub notes: Option<String>,
+    /// Property this loan financed, if any — paying it down logs an expense
+    /// against that property.
+    pub investment_id: Option<i64>,
+    /// Account each payment is settled from when marked paid.
+    pub settle_account_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -257,6 +289,8 @@ pub struct EmiInput {
     pub next_due: String,
     pub active: bool,
     pub notes: Option<String>,
+    pub investment_id: Option<i64>,
+    pub settle_account_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -295,6 +329,112 @@ pub struct CategorySpend {
 pub struct FinanceCharts {
     pub monthly: Vec<MonthlyFlow>,
     pub categories: Vec<CategorySpend>,
+}
+
+/// A user-managed pick-list entry for `transactions.category` (plain text,
+/// no FK — deleting a category never touches past transactions).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TransactionCategory {
+    pub id: i64,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// Investments (land, plot, flat, house — purchase / rent / sale)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvestmentInput {
+    pub id: Option<i64>,
+    pub person_id: Option<i64>,
+    pub name: String,
+    pub kind: String,
+    pub address: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvestmentTransaction {
+    pub id: i64,
+    pub investment_id: i64,
+    pub kind: String, // purchase | rent_income | expense | sale
+    pub amount: f64,
+    pub date: String,
+    pub counterparty: Option<String>,
+    pub notes: Option<String>,
+    /// Finance account this transaction moved cash into/out of, if any.
+    pub settle_account_id: Option<i64>,
+    pub linked_transaction_id: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvestmentTransactionInput {
+    pub id: Option<i64>,
+    pub investment_id: i64,
+    pub kind: String,
+    pub amount: f64,
+    pub date: String,
+    pub counterparty: Option<String>,
+    pub notes: Option<String>,
+    pub settle_account_id: Option<i64>,
+}
+
+/// A tenancy in effect for a property. Its mere existence means the property
+/// is currently "rented"; ending a tenancy removes the row (past rent
+/// payments already live on as `investment_transactions`, so no history is
+/// lost).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RentSchedule {
+    pub id: i64,
+    pub investment_id: i64,
+    pub monthly_amount: f64,
+    pub next_due: String,
+    pub tenant_name: Option<String>,
+    pub notes: Option<String>,
+    /// Account each rent payment is settled into when marked received.
+    pub settle_account_id: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RentScheduleInput {
+    pub id: Option<i64>,
+    pub investment_id: i64,
+    pub monthly_amount: f64,
+    pub next_due: String,
+    pub tenant_name: Option<String>,
+    pub notes: Option<String>,
+    pub settle_account_id: Option<i64>,
+}
+
+/// One property plus everything derived from its transaction history:
+/// status (owned/rented/sold) is computed, never stored.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvestmentSummary {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+    pub address: Option<String>,
+    pub notes: Option<String>,
+    pub person_id: Option<i64>,
+    pub status: String, // owned | rented | sold
+    pub total_purchase: f64,
+    pub total_expense: f64,
+    pub total_rent_income: f64,
+    pub total_sale: f64,
+    pub gain: f64,
+    pub rent_schedule: Option<RentSchedule>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InvestmentDetail {
+    pub summary: InvestmentSummary,
+    pub transactions: Vec<InvestmentTransaction>,
+    pub emis: Vec<Emi>,
 }
 
 // ---------------------------------------------------------------------------

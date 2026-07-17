@@ -8,9 +8,11 @@ import {
   Cycle,
   Emi,
   FinanceOverview,
+  InvestmentSummary,
   Person,
   Subscription,
   Transaction,
+  TransactionCategory,
 } from "../api";
 import {
   Confirm,
@@ -24,7 +26,7 @@ import {
   useToast,
 } from "../components/ui";
 import { dueLabel, fmtDate, fmtMoney, todayISO } from "../lib/format";
-import { Check, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeftRight, Check, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 type Tab = "overview" | "accounts" | "transactions" | "subscriptions" | "emis";
 
@@ -117,10 +119,11 @@ function Overview({ refreshKey, currency }: { refreshKey: number; currency: stri
   }, [refreshKey]);
 
   if (!data) return null;
+  const cashOnHand = data.by_kind.find((k) => k.kind === "cash")?.total ?? 0;
 
   return (
     <div className="max-w-[860px]">
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-4 gap-4 mb-4">
         <div className="card p-4">
           <div className="text-mut text-[12px] mb-1">Net worth</div>
           <div className={`text-2xl font-semibold ${data.net_worth < 0 ? "text-bad" : ""}`}>
@@ -134,6 +137,13 @@ function Overview({ refreshKey, currency }: { refreshKey: number; currency: stri
         <div className="card p-4">
           <div className="text-mut text-[12px] mb-1">Liabilities</div>
           <div className="text-2xl font-semibold text-bad">{fmtMoney(data.liabilities, currency)}</div>
+        </div>
+        <div className="card p-4">
+          <div className="text-mut text-[12px] mb-1">Cash on hand</div>
+          <div className="text-2xl font-semibold">{fmtMoney(cashOnHand, currency)}</div>
+          {!data.by_kind.some((k) => k.kind === "cash") && (
+            <div className="text-mut text-[11px] mt-1">Add a Cash account under Accounts to track this.</div>
+          )}
         </div>
       </div>
 
@@ -198,10 +208,12 @@ function Accounts({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [editing, setEditing] = useState<Account | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Account | null>(null);
+  const [openId, setOpenId] = useState<number | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.accountList().then(setAccounts).catch(() => {});
-  }, [refreshKey]);
+  }, []);
+  useEffect(load, [load, refreshKey]);
 
   return (
     <div className="max-w-[760px]">
@@ -215,7 +227,11 @@ function Accounts({
       )}
       <div className="flex flex-col gap-2">
         {accounts.map((a) => (
-          <div key={a.id} className="card px-4 py-3 flex items-center gap-3 group">
+          <div
+            key={a.id}
+            className="card px-4 py-3 flex items-center gap-3 group cursor-pointer hover:border-acc/40"
+            onClick={() => setOpenId(a.id)}
+          >
             <div className="flex-1 min-w-0">
               <div className="font-medium truncate flex items-center gap-2">
                 {a.name}
@@ -236,7 +252,7 @@ function Accounts({
               {fmtMoney(a.balance, currency)}
               {a.kind === "credit_card" && <span className="text-[11px] text-mut ml-1">owed</span>}
             </div>
-            <div className="opacity-0 group-hover:opacity-100 flex gap-1">
+            <div className="opacity-0 group-hover:opacity-100 flex gap-1" onClick={(e) => e.stopPropagation()}>
               <button className="btn-ghost !p-1.5" onClick={() => setEditing(a)}>
                 <Pencil size={14} />
               </button>
@@ -259,18 +275,279 @@ function Accounts({
           }}
         />
       )}
+      {openId != null && (
+        <AccountDetailModal
+          accountId={openId}
+          accounts={accounts}
+          currency={currency}
+          onClose={() => setOpenId(null)}
+          onChanged={() => {
+            load();
+            onChanged();
+          }}
+        />
+      )}
       {confirmDelete && (
-        <Confirm
-          message={`Delete “${confirmDelete.name}”?`}
-          detail="All transactions recorded against this account are deleted too."
+        <DeleteAccountModal
+          account={confirmDelete}
           onClose={() => setConfirmDelete(null)}
-          onConfirm={async () => {
-            await api.accountDelete(confirmDelete.id);
+          onDeleted={() => {
+            setConfirmDelete(null);
             onChanged();
           }}
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Delete an account — two steps: show what's affected, then type the name
+// to confirm. Deleting removes the account's own transactions; anything
+// settled via it from Investments (rent/EMI/property expenses) just loses
+// the "via account" link, its own history stays.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_COUNT_LABELS: Record<string, (n: number) => string> = {
+  transactions: (n) => `${n} transaction${n === 1 ? "" : "s"} recorded against this account — deleted`,
+  investment_transactions: (n) =>
+    `${n} property transaction${n === 1 ? "" : "s"} settled via this account — history stays, just unlinked`,
+  rent_schedules: (n) => `${n} tenancy settlement${n === 1 ? "" : "s"} — stays, just unlinked`,
+  emis: (n) => `${n} EMI${n === 1 ? "" : "s"} settled via this account — stays, just unlinked`,
+};
+
+function DeleteAccountModal({
+  account,
+  onClose,
+  onDeleted,
+}: {
+  account: Account;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [step, setStep] = useState<1 | 2>(1);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [ack, setAck] = useState("");
+  const toast = useToast();
+
+  useEffect(() => {
+    api.accountRelatedCounts(account.id).then(setCounts).catch(() => {});
+  }, [account.id]);
+
+  const lines = Object.entries(counts).filter(([, n]) => n > 0);
+
+  if (step === 1) {
+    return (
+      <Modal title={`Delete "${account.name}"?`} onClose={onClose}>
+        <p className="text-mut text-[13px] mb-2">This permanently removes the account. It affects:</p>
+        {lines.length === 0 ? (
+          <p className="text-mut text-[13px] mb-3">No transactions or linked records yet.</p>
+        ) : (
+          <ul className="text-[13px] mb-3 list-disc pl-5 flex flex-col gap-1">
+            {lines.map(([key, n]) => (
+              <li key={key}>{ACCOUNT_COUNT_LABELS[key]?.(n) ?? `${key}: ${n}`}</li>
+            ))}
+          </ul>
+        )}
+        <p className="text-warn text-[12.5px] mb-3">This cannot be undone.</p>
+        <div className="flex justify-end gap-2">
+          <button className="btn-edge" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn-danger" onClick={() => setStep(2)}>
+            Continue
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Confirm deletion" onClose={onClose}>
+      <p className="text-[12.5px] leading-relaxed mb-3 text-warn">
+        Type the account name to confirm. This cannot be undone.
+      </p>
+      <Field label={`Type "${account.name}" to confirm`}>
+        <input className="ctl" value={ack} autoFocus onChange={(e) => setAck(e.target.value)} />
+      </Field>
+      <div className="flex justify-end gap-2 mt-2">
+        <button className="btn-edge" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn-danger"
+          disabled={ack.trim().toLowerCase() !== account.name.trim().toLowerCase()}
+          onClick={async () => {
+            try {
+              await api.accountDelete(account.id);
+              toast("Account deleted");
+              onDeleted();
+            } catch (e) {
+              toast(String(e), "bad");
+            }
+          }}
+        >
+          Delete forever
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function AccountDetailModal({
+  accountId,
+  accounts,
+  currency,
+  onClose,
+  onChanged,
+}: {
+  accountId: number;
+  accounts: Account[];
+  currency: string;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const account = accounts.find((a) => a.id === accountId);
+  // The current account first, so "Add transaction" defaults to it.
+  const orderedAccounts = account ? [account, ...accounts.filter((a) => a.id !== account.id)] : accounts;
+  const [txs, setTxs] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<TransactionCategory[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Transaction | null>(null);
+
+  const loadCategories = useCallback(() => {
+    api.categoryList().then(setCategories).catch(() => {});
+  }, []);
+
+  const load = useCallback(() => {
+    api.transactionList(accountId, 500).then(setTxs).catch(() => {});
+    loadCategories();
+  }, [accountId, loadCategories]);
+  useEffect(load, [load]);
+
+  if (!account) return null;
+
+  return (
+    <Modal title={account.name} onClose={onClose} wide>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-mut text-[12px]">{KIND_LABEL[account.kind]}</span>
+        {account.details.bank_name && <span className="text-mut text-[12px]">· {account.details.bank_name}</span>}
+        {account.notes && <span className="text-mut text-[12px]">· {account.notes}</span>}
+      </div>
+      <div className="card p-3 mb-4">
+        <div className="text-mut text-[11px] mb-0.5">
+          {account.kind === "credit_card" ? "Amount owed" : "Balance"}
+        </div>
+        <div className={`text-2xl font-semibold ${account.kind === "credit_card" ? "text-bad" : ""}`}>
+          {fmtMoney(account.balance, currency)}
+        </div>
+        <div className="text-mut text-[11px] mt-0.5">
+          Opened with {fmtMoney(account.opening_balance, currency)}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[12px] uppercase tracking-wide text-mut font-semibold">Transaction history</div>
+        <div className="flex gap-1.5">
+          <button
+            className="btn-edge !py-1 text-[12px]"
+            onClick={() => setTransferring(true)}
+            disabled={orderedAccounts.length < 2}
+            title="Move money to or from another account (e.g. a cash withdrawal)"
+          >
+            <ArrowLeftRight size={13} /> Transfer
+          </button>
+          <button className="btn-edge !py-1 text-[12px]" onClick={() => setAdding(true)}>
+            <Plus size={13} /> Add transaction
+          </button>
+        </div>
+      </div>
+      {txs.length === 0 ? (
+        <Empty text="No transactions yet" />
+      ) : (
+        <div className="card divide-y divide-edge mb-1">
+          {txs.map((t) => (
+            <div key={t.id} className="px-3 py-2 flex items-center gap-3 group">
+              <div className="w-20 shrink-0 text-mut text-[12px]">{fmtDate(t.date)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="truncate">{t.description || t.category || t.kind}</div>
+                {t.category && <div className="text-mut text-[12px] truncate">{t.category}</div>}
+              </div>
+              <div
+                className={`font-medium ${
+                  t.kind === "expense" || t.kind === "transfer_out"
+                    ? "text-bad"
+                    : t.kind === "income"
+                      ? "text-ok"
+                      : "text-mut"
+                }`}
+              >
+                {t.kind === "expense" || t.kind === "transfer_out" ? "−" : "+"}
+                {fmtMoney(t.amount, currency)}
+              </div>
+              <div className="opacity-0 group-hover:opacity-100 flex gap-1">
+                {!t.transfer_peer_id && (
+                  <button className="btn-ghost !p-1" onClick={() => setEditingTx(t)}>
+                    <Pencil size={13} />
+                  </button>
+                )}
+                <button className="btn-ghost !p-1 text-bad" onClick={() => setConfirmDelete(t)}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(adding || editingTx) && (
+        <TransactionEditor
+          transaction={editingTx}
+          accounts={orderedAccounts}
+          categories={categories}
+          onAddCategory={loadCategories}
+          onClose={() => {
+            setAdding(false);
+            setEditingTx(null);
+          }}
+          onSaved={() => {
+            setAdding(false);
+            setEditingTx(null);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+      {transferring && (
+        <TransferEditor
+          accounts={orderedAccounts}
+          onClose={() => setTransferring(false)}
+          onSaved={() => {
+            setTransferring(false);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+      {confirmDelete && (
+        <Confirm
+          message="Delete this transaction?"
+          detail={
+            confirmDelete.transfer_peer_id
+              ? "This is one leg of a transfer — both sides are removed together and both balances adjust back."
+              : "The account balance is adjusted back."
+          }
+          onClose={() => setConfirmDelete(null)}
+          onConfirm={async () => {
+            await api.transactionDelete(confirmDelete.id);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+    </Modal>
   );
 }
 
@@ -320,7 +597,9 @@ function AccountEditor({
 }) {
   const [name, setName] = useState(account?.name ?? "");
   const [kind, setKind] = useState<AccountKind>(account?.kind ?? "bank");
-  const [balance, setBalance] = useState(String(account?.balance ?? ""));
+  const [openingBalance, setOpeningBalance] = useState(
+    String(account?.opening_balance ?? account?.balance ?? "")
+  );
   const [notes, setNotes] = useState(account?.notes ?? "");
   const [personId, setPersonId] = useState<number | null>(account?.person_id ?? null);
   const [details, setDetails] = useState<AccountDetails>(account?.details ?? {});
@@ -355,7 +634,7 @@ function AccountEditor({
         id: account?.id ?? null,
         name,
         kind,
-        balance: parseFloat(balance || "0"),
+        opening_balance: parseFloat(openingBalance || "0"),
         notes: notes || null,
         person_id: personId,
         details: { ...details, cards: cleanCards.length ? cleanCards : undefined },
@@ -398,15 +677,20 @@ function AccountEditor({
             ))}
           </select>
         </Field>
-        <Field label={kind === "credit_card" ? "Amount owed" : "Current balance"}>
+        <Field label={kind === "credit_card" ? "Opening amount owed" : "Opening balance"}>
           <input
             type="number"
             step="0.01"
             className="ctl"
-            value={balance}
-            onChange={(e) => setBalance(e.target.value)}
+            value={openingBalance}
+            onChange={(e) => setOpeningBalance(e.target.value)}
           />
         </Field>
+      </div>
+      <div className="text-mut text-[12px] -mt-2 mb-2">
+        {account
+          ? "Adjusts the current balance by the same amount — no transaction is created."
+          : "The balance before you started tracking here. Every transaction after this adjusts it automatically."}
       </div>
       <Field label="Notes (optional)">
         <input className="ctl" value={notes} onChange={(e) => setNotes(e.target.value)} />
@@ -540,15 +824,24 @@ function Transactions({
   onChanged: () => void;
 }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [categories, setCategories] = useState<TransactionCategory[]>([]);
   const [txs, setTxs] = useState<Transaction[]>([]);
   const [filter, setFilter] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [transferring, setTransferring] = useState(false);
+  const [managingCategories, setManagingCategories] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Transaction | null>(null);
+
+  const loadCategories = useCallback(() => {
+    api.categoryList().then(setCategories).catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     api.accountList().then(setAccounts).catch(() => {});
     api.transactionList(filter, 200).then(setTxs).catch(() => {});
-  }, [filter]);
+    loadCategories();
+  }, [filter, loadCategories]);
   useEffect(load, [load, refreshKey]);
 
   return (
@@ -567,6 +860,12 @@ function Transactions({
           ))}
         </select>
         <div className="flex-1" />
+        <button className="btn-edge !p-1.5" title="Manage categories" onClick={() => setManagingCategories(true)}>
+          <ListTree size={15} />
+        </button>
+        <button className="btn-edge" onClick={() => setTransferring(true)} disabled={accounts.length < 2}>
+          <ArrowLeftRight size={15} /> Transfer
+        </button>
         <button className="btn-acc" onClick={() => setAdding(true)} disabled={accounts.length === 0}>
           <Plus size={15} /> Add transaction
         </button>
@@ -588,27 +887,59 @@ function Transactions({
                   {t.category ? ` · ${t.category}` : ""}
                 </div>
               </div>
-              <div className={`font-medium ${t.kind === "expense" ? "text-bad" : "text-ok"}`}>
-                {t.kind === "expense" ? "−" : "+"}
+              <div
+                className={`font-medium ${
+                  t.kind === "expense" || t.kind === "transfer_out"
+                    ? "text-bad"
+                    : t.kind === "income"
+                      ? "text-ok"
+                      : "text-mut"
+                }`}
+              >
+                {t.kind === "expense" || t.kind === "transfer_out" ? "−" : "+"}
                 {fmtMoney(t.amount, currency)}
               </div>
-              <button
-                className="opacity-0 group-hover:opacity-100 btn-ghost !p-1 text-bad"
-                onClick={() => setConfirmDelete(t)}
-              >
-                <Trash2 size={13} />
-              </button>
+              <div className="opacity-0 group-hover:opacity-100 flex gap-1">
+                {!t.transfer_peer_id && (
+                  <button className="btn-ghost !p-1" onClick={() => setEditingTx(t)}>
+                    <Pencil size={13} />
+                  </button>
+                )}
+                <button className="btn-ghost !p-1 text-bad" onClick={() => setConfirmDelete(t)}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {adding && (
+      {(adding || editingTx) && (
         <TransactionEditor
+          transaction={editingTx}
           accounts={accounts}
-          onClose={() => setAdding(false)}
+          categories={categories}
+          onAddCategory={loadCategories}
+          onClose={() => {
+            setAdding(false);
+            setEditingTx(null);
+          }}
           onSaved={() => {
             setAdding(false);
+            setEditingTx(null);
+            onChanged();
+          }}
+        />
+      )}
+      {managingCategories && (
+        <CategoryManagerModal onClose={() => setManagingCategories(false)} onChanged={loadCategories} />
+      )}
+      {transferring && (
+        <TransferEditor
+          accounts={accounts}
+          onClose={() => setTransferring(false)}
+          onSaved={() => {
+            setTransferring(false);
             onChanged();
           }}
         />
@@ -616,7 +947,11 @@ function Transactions({
       {confirmDelete && (
         <Confirm
           message="Delete this transaction?"
-          detail="The account balance is adjusted back."
+          detail={
+            confirmDelete.transfer_peer_id
+              ? "This is one leg of a transfer — both sides are removed together and both balances adjust back."
+              : "The account balance is adjusted back."
+          }
           onClose={() => setConfirmDelete(null)}
           onConfirm={async () => {
             await api.transactionDelete(confirmDelete.id);
@@ -629,25 +964,35 @@ function Transactions({
 }
 
 function TransactionEditor({
+  transaction,
   accounts,
+  categories,
+  onAddCategory,
   onClose,
   onSaved,
 }: {
+  transaction?: Transaction | null;
   accounts: Account[];
+  categories: TransactionCategory[];
+  onAddCategory: () => void;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? 0);
-  const [kind, setKind] = useState<"expense" | "income">("expense");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState("");
-  const [description, setDescription] = useState("");
-  const [date, setDate] = useState(todayISO());
+  const [accountId, setAccountId] = useState(transaction?.account_id ?? accounts[0]?.id ?? 0);
+  const [kind, setKind] = useState<"expense" | "income">(
+    transaction && (transaction.kind === "expense" || transaction.kind === "income") ? transaction.kind : "expense"
+  );
+  const [amount, setAmount] = useState(transaction ? String(transaction.amount) : "");
+  const [category, setCategory] = useState(transaction?.category ?? "");
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [description, setDescription] = useState(transaction?.description ?? "");
+  const [date, setDate] = useState(transaction?.date ?? todayISO());
   const toast = useToast();
 
   const save = async () => {
     try {
-      await api.transactionCreate({
+      await api.transactionSave({
+        id: transaction?.id ?? null,
         account_id: accountId,
         kind,
         amount: parseFloat(amount),
@@ -655,7 +1000,7 @@ function TransactionEditor({
         description: description || null,
         date,
       });
-      toast("Transaction added");
+      toast(transaction ? "Transaction updated" : "Transaction added");
       onSaved();
     } catch (e) {
       toast(String(e), "bad");
@@ -663,7 +1008,7 @@ function TransactionEditor({
   };
 
   return (
-    <Modal title="Add transaction" onClose={onClose}>
+    <Modal title={transaction ? "Edit transaction" : "Add transaction"} onClose={onClose}>
       <div className="flex gap-1 mb-3">
         {(["expense", "income"] as const).map((k) => (
           <button
@@ -703,12 +1048,22 @@ function TransactionEditor({
           />
         </Field>
         <Field label="Category (optional)">
-          <input
+          <select
             className="ctl"
             value={category}
-            placeholder="groceries, salary…"
-            onChange={(e) => setCategory(e.target.value)}
-          />
+            onChange={(e) => {
+              if (e.target.value === "__new__") setAddingCategory(true);
+              else setCategory(e.target.value);
+            }}
+          >
+            <option value="">No category</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+            <option value="__new__">+ Add new category…</option>
+          </select>
         </Field>
         <Field label="Date">
           <input type="date" className="ctl" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -729,7 +1084,281 @@ function TransactionEditor({
           onClick={save}
           disabled={!accountId || !(parseFloat(amount) > 0)}
         >
+          {transaction ? "Save" : "Add"}
+        </button>
+      </div>
+      {addingCategory && (
+        <NewCategoryModal
+          onClose={() => setAddingCategory(false)}
+          onCreated={(name) => {
+            setCategory(name);
+            setAddingCategory(false);
+            onAddCategory();
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function NewCategoryModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const toast = useToast();
+
+  const save = async () => {
+    try {
+      const c = await api.categoryCreate(name);
+      toast("Category added");
+      onCreated(c.name);
+    } catch (e) {
+      toast(String(e), "bad");
+    }
+  };
+
+  return (
+    <Modal title="New category" onClose={onClose}>
+      <Field label="Category name">
+        <input
+          className="ctl"
+          value={name}
+          autoFocus
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+        />
+      </Field>
+      <div className="flex justify-end gap-2 mt-2">
+        <button className="btn-edge" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn-acc" onClick={save} disabled={!name.trim()}>
           Add
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function RenameCategoryModal({
+  category,
+  onClose,
+  onSaved,
+}: {
+  category: TransactionCategory;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(category.name);
+  const toast = useToast();
+
+  const save = async () => {
+    try {
+      await api.categoryRename(category.id, name);
+      toast("Category renamed");
+      onSaved();
+    } catch (e) {
+      toast(String(e), "bad");
+    }
+  };
+
+  return (
+    <Modal title="Rename category" onClose={onClose}>
+      <Field label="Category name">
+        <input
+          className="ctl"
+          value={name}
+          autoFocus
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+        />
+      </Field>
+      <div className="flex justify-end gap-2 mt-2">
+        <button className="btn-edge" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn-acc" onClick={save} disabled={!name.trim()}>
+          Save
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function CategoryManagerModal({
+  onClose,
+  onChanged,
+}: {
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [categories, setCategories] = useState<TransactionCategory[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [renaming, setRenaming] = useState<TransactionCategory | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<TransactionCategory | null>(null);
+
+  const load = useCallback(() => {
+    api.categoryList().then(setCategories).catch(() => {});
+  }, []);
+  useEffect(load, [load]);
+
+  return (
+    <Modal title="Manage categories" onClose={onClose}>
+      <div className="flex justify-end mb-2">
+        <button className="btn-edge !py-1 text-[12px]" onClick={() => setAdding(true)}>
+          <Plus size={13} /> Add category
+        </button>
+      </div>
+      {categories.length === 0 ? (
+        <Empty text="No categories yet" />
+      ) : (
+        <div className="flex flex-col gap-0.5 max-h-[320px] overflow-y-auto">
+          {categories.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-panel2 group">
+              <span className="flex-1 truncate text-[13px]">{c.name}</span>
+              <button
+                className="opacity-0 group-hover:opacity-100 btn-ghost !p-1"
+                onClick={() => setRenaming(c)}
+              >
+                <Pencil size={13} />
+              </button>
+              <button
+                className="opacity-0 group-hover:opacity-100 btn-ghost !p-1 text-bad"
+                onClick={() => setConfirmDelete(c)}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {adding && (
+        <NewCategoryModal
+          onClose={() => setAdding(false)}
+          onCreated={() => {
+            setAdding(false);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+      {renaming && (
+        <RenameCategoryModal
+          category={renaming}
+          onClose={() => setRenaming(null)}
+          onSaved={() => {
+            setRenaming(null);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+      {confirmDelete && (
+        <Confirm
+          message={`Delete category "${confirmDelete.name}"?`}
+          detail="Past transactions already using this category keep their label — it's only removed from the picker."
+          onClose={() => setConfirmDelete(null)}
+          onConfirm={async () => {
+            await api.categoryDelete(confirmDelete.id);
+            load();
+            onChanged();
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function TransferEditor({
+  accounts,
+  onClose,
+  onSaved,
+}: {
+  accounts: Account[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [fromId, setFromId] = useState(accounts[0]?.id ?? 0);
+  const [toId, setToId] = useState(accounts[1]?.id ?? accounts[0]?.id ?? 0);
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [notes, setNotes] = useState("");
+  const toast = useToast();
+
+  const save = async () => {
+    try {
+      await api.transactionTransfer({
+        from_account_id: fromId,
+        to_account_id: toId,
+        amount: parseFloat(amount),
+        date,
+        notes: notes.trim() || null,
+      });
+      toast("Transfer recorded");
+      onSaved();
+    } catch (e) {
+      toast(String(e), "bad");
+    }
+  };
+
+  return (
+    <Modal title="Transfer between accounts" onClose={onClose}>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="From">
+          <select className="ctl" value={fromId} onChange={(e) => setFromId(Number(e.target.value))}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="To">
+          <select className="ctl" value={toId} onChange={(e) => setToId(Number(e.target.value))}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Amount">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            className="ctl"
+            value={amount}
+            autoFocus
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </Field>
+        <Field label="Date">
+          <input type="date" className="ctl" value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+      </div>
+      <Field label="Notes (optional)">
+        <input className="ctl" value={notes} onChange={(e) => setNotes(e.target.value)} />
+      </Field>
+      <div className="text-mut text-[12px] mb-3">
+        Moves money between two accounts (e.g. a cash withdrawal). Not counted as income or
+        expense — it's the same money, just in a different place.
+      </div>
+      <div className="flex justify-end gap-2">
+        <button className="btn-edge" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn-acc"
+          onClick={save}
+          disabled={!fromId || !toId || fromId === toId || !(parseFloat(amount) > 0)}
+        >
+          Transfer
         </button>
       </div>
     </Modal>
@@ -967,13 +1596,19 @@ function Emis({
   onChanged: () => void;
 }) {
   const [emis, setEmis] = useState<Emi[]>([]);
+  const [investments, setInvestments] = useState<InvestmentSummary[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [editing, setEditing] = useState<Emi | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Emi | null>(null);
   const toast = useToast();
 
   useEffect(() => {
     api.emiList().then(setEmis).catch(() => {});
+    api.investmentList().then(setInvestments).catch(() => {});
+    api.accountList().then(setAccounts).catch(() => {});
   }, [refreshKey]);
+
+  const investmentName = (id: number | null) => (id == null ? null : investments.find((i) => i.id === id)?.name);
 
   return (
     <div className="max-w-[760px]">
@@ -997,6 +1632,7 @@ function Emis({
                   <div className="text-mut text-[12px]">
                     {fmtMoney(e.monthly_amount, currency)}/mo
                     {e.lender ? ` · ${e.lender}` : ""} · {e.months_paid}/{e.total_months} paid
+                    {investmentName(e.investment_id) ? ` · for ${investmentName(e.investment_id)}` : ""}
                   </div>
                 </div>
                 {e.active ? (
@@ -1049,6 +1685,8 @@ function Emis({
       {editing && (
         <EmiEditor
           emi={editing === "new" ? null : editing}
+          investments={investments}
+          accounts={accounts}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -1072,10 +1710,14 @@ function Emis({
 
 function EmiEditor({
   emi,
+  investments,
+  accounts,
   onClose,
   onSaved,
 }: {
   emi: Emi | null;
+  investments: InvestmentSummary[];
+  accounts: Account[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1086,6 +1728,8 @@ function EmiEditor({
   const [monthsPaid, setMonthsPaid] = useState(String(emi?.months_paid ?? "0"));
   const [nextDue, setNextDue] = useState(emi?.next_due ?? todayISO());
   const [notes, setNotes] = useState(emi?.notes ?? "");
+  const [investmentId, setInvestmentId] = useState<number | null>(emi?.investment_id ?? null);
+  const [settleAccountId, setSettleAccountId] = useState<number | null>(emi?.settle_account_id ?? null);
   const toast = useToast();
 
   const save = async () => {
@@ -1102,6 +1746,8 @@ function EmiEditor({
         next_due: nextDue,
         active: emi?.active ?? true,
         notes: notes || null,
+        investment_id: investmentId,
+        settle_account_id: settleAccountId,
       });
       toast("EMI saved");
       onSaved();
@@ -1135,6 +1781,42 @@ function EmiEditor({
       <Field label="Notes (optional)">
         <input className="ctl" value={notes} onChange={(e) => setNotes(e.target.value)} />
       </Field>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Financing a property? (optional)">
+          <select
+            className="ctl"
+            value={investmentId ?? ""}
+            onChange={(e) => setInvestmentId(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">Not linked to a property</option>
+            {investments.map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Settle payments from account (optional)">
+          <select
+            className="ctl"
+            value={settleAccountId ?? ""}
+            onChange={(e) => setSettleAccountId(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">Don't track against an account</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {investmentId != null && (
+        <div className="text-mut text-[12px] mb-3">
+          Each "Paid" click logs this amount as an expense against that property, on top of rolling the
+          due date forward.
+        </div>
+      )}
       <div className="flex justify-end gap-2 mt-2">
         <button
           className="btn-acc"

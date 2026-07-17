@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   name TEXT NOT NULL,
   kind TEXT NOT NULL,
   balance REAL NOT NULL DEFAULT 0,
+  opening_balance REAL NOT NULL DEFAULT 0,
   notes TEXT,
   person_id INTEGER REFERENCES persons(id),
   details TEXT NOT NULL DEFAULT '{}',
@@ -135,6 +136,13 @@ CREATE TABLE IF NOT EXISTS transactions (
   category TEXT,
   description TEXT,
   date TEXT NOT NULL,
+  transfer_peer_id INTEGER REFERENCES transactions(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transaction_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
   created_at TEXT NOT NULL
 );
 
@@ -161,6 +169,8 @@ CREATE TABLE IF NOT EXISTS emis (
   next_due TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
   notes TEXT,
+  investment_id INTEGER REFERENCES investments(id),
+  settle_account_id INTEGER REFERENCES accounts(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -203,6 +213,43 @@ CREATE TABLE IF NOT EXISTS documents (
   expiry_date TEXT,
   issuing_authority TEXT,
   notes TEXT,
+  investment_id INTEGER REFERENCES investments(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS investments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  address TEXT,
+  notes TEXT,
+  person_id INTEGER REFERENCES persons(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS investment_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  investment_id INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  amount REAL NOT NULL,
+  date TEXT NOT NULL,
+  counterparty TEXT,
+  notes TEXT,
+  settle_account_id INTEGER REFERENCES accounts(id),
+  linked_transaction_id INTEGER REFERENCES transactions(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS investment_rent_schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  investment_id INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
+  monthly_amount REAL NOT NULL DEFAULT 0,
+  next_due TEXT NOT NULL,
+  tenant_name TEXT,
+  notes TEXT,
+  settle_account_id INTEGER REFERENCES accounts(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -298,6 +345,127 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         conn.execute_batch("ALTER TABLE accounts ADD COLUMN details TEXT NOT NULL DEFAULT '{}';")
             .map_err(|e| format!("Migration failed on accounts.details: {e}"))?;
         changed = true;
+    }
+
+    // Opening balance: a fixed reference point separate from the live
+    // balance, so it can be edited any time (e.g. it was entered wrong)
+    // without needing fake historical transactions. Backfill recovers the
+    // implied opening balance from today's balance minus the net effect of
+    // every transaction already recorded, so existing balances don't jump.
+    if !has_column(conn, "accounts", "opening_balance")? {
+        conn.execute_batch("ALTER TABLE accounts ADD COLUMN opening_balance REAL NOT NULL DEFAULT 0;")
+            .map_err(|e| format!("Migration failed on accounts.opening_balance: {e}"))?;
+        conn.execute_batch(
+            "UPDATE accounts SET opening_balance = balance - COALESCE((
+                SELECT SUM(CASE WHEN t.kind IN ('expense','transfer_out') THEN -t.amount ELSE t.amount END)
+                FROM transactions t WHERE t.account_id = accounts.id
+             ), 0);",
+        )
+        .map_err(|e| format!("Migration failed backfilling accounts.opening_balance: {e}"))?;
+        changed = true;
+    }
+
+    // Investments module: optional link from a document to the property it belongs to.
+    if table_exists(conn, "documents")? && !has_column(conn, "documents", "investment_id")? {
+        conn.execute_batch(
+            "ALTER TABLE documents ADD COLUMN investment_id INTEGER REFERENCES investments(id);",
+        )
+        .map_err(|e| format!("Migration failed on documents.investment_id: {e}"))?;
+        changed = true;
+    }
+
+    // Cash-on-hand tracking: investment transactions/tenancies can optionally
+    // settle to a Finance account, and transfers between accounts link their
+    // two legs together.
+    if table_exists(conn, "investment_transactions")? {
+        if !has_column(conn, "investment_transactions", "settle_account_id")? {
+            conn.execute_batch(
+                "ALTER TABLE investment_transactions ADD COLUMN settle_account_id INTEGER REFERENCES accounts(id);",
+            )
+            .map_err(|e| format!("Migration failed on investment_transactions.settle_account_id: {e}"))?;
+            changed = true;
+        }
+        if !has_column(conn, "investment_transactions", "linked_transaction_id")? {
+            conn.execute_batch(
+                "ALTER TABLE investment_transactions ADD COLUMN linked_transaction_id INTEGER REFERENCES transactions(id);",
+            )
+            .map_err(|e| format!("Migration failed on investment_transactions.linked_transaction_id: {e}"))?;
+            changed = true;
+        }
+    }
+    if table_exists(conn, "investment_rent_schedules")?
+        && !has_column(conn, "investment_rent_schedules", "settle_account_id")?
+    {
+        conn.execute_batch(
+            "ALTER TABLE investment_rent_schedules ADD COLUMN settle_account_id INTEGER REFERENCES accounts(id);",
+        )
+        .map_err(|e| format!("Migration failed on investment_rent_schedules.settle_account_id: {e}"))?;
+        changed = true;
+    }
+    if table_exists(conn, "transactions")? && !has_column(conn, "transactions", "transfer_peer_id")? {
+        conn.execute_batch(
+            "ALTER TABLE transactions ADD COLUMN transfer_peer_id INTEGER REFERENCES transactions(id);",
+        )
+        .map_err(|e| format!("Migration failed on transactions.transfer_peer_id: {e}"))?;
+        changed = true;
+    }
+
+    // EMIs can optionally finance a property and settle payments to an account.
+    if table_exists(conn, "emis")? {
+        if !has_column(conn, "emis", "investment_id")? {
+            conn.execute_batch("ALTER TABLE emis ADD COLUMN investment_id INTEGER REFERENCES investments(id);")
+                .map_err(|e| format!("Migration failed on emis.investment_id: {e}"))?;
+            changed = true;
+        }
+        if !has_column(conn, "emis", "settle_account_id")? {
+            conn.execute_batch("ALTER TABLE emis ADD COLUMN settle_account_id INTEGER REFERENCES accounts(id);")
+                .map_err(|e| format!("Migration failed on emis.settle_account_id: {e}"))?;
+            changed = true;
+        }
+    }
+
+    // Finance categories: a managed pick-list instead of free text. First run
+    // seeds it from whatever category strings already appear in transactions,
+    // plus a handful of sensible defaults, so the dropdown isn't empty and no
+    // existing data is orphaned. `transactions.category` itself stays a plain
+    // TEXT column (no FK) so deleting a category never touches past entries.
+    if table_exists(conn, "transaction_categories")? {
+        let existing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transaction_categories", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if existing == 0 {
+            let now = now();
+            let mut seen = std::collections::HashSet::new();
+            let used: Vec<String> = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT DISTINCT TRIM(category) FROM transactions
+                         WHERE category IS NOT NULL AND TRIM(category) != ''",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                rows
+            };
+            const DEFAULTS: [&str; 10] = [
+                "Food", "Household", "Travel", "Bills", "Salary", "Shopping", "Healthcare", "Rent",
+                "Entertainment", "Misc",
+            ];
+            for name in used.into_iter().chain(DEFAULTS.iter().map(|s| s.to_string())) {
+                let key = name.to_lowercase();
+                if seen.insert(key) {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO transaction_categories (name, created_at) VALUES (?1, ?2)",
+                        params![name, now],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            changed = true;
+        }
     }
 
     // v1 → v2: search index gains a person display column (FTS5 tables cannot
@@ -583,6 +751,21 @@ pub fn rebuild_search_index(conn: &Connection) -> Result<(), String> {
                 "SELECT id, doc_type || ' ' || COALESCE(NULLIF(name_on_document,''), ''),
                  'document ' || COALESCE(issuing_authority,'') || ' ' || COALESCE(notes,''), person_id
                  FROM documents",
+            )?,
+        ),
+        (
+            "investments",
+            collect(
+                "SELECT id, name, kind || ' ' || COALESCE(address,'') || ' ' || COALESCE(notes,''), person_id
+                 FROM investments",
+            )?,
+        ),
+        (
+            "investment_transactions",
+            collect(
+                "SELECT it.id, COALESCE(NULLIF(it.counterparty,''), it.kind || ' ' || i.name),
+                 it.kind || ' ' || COALESCE(it.notes,'') || ' ' || i.name, i.person_id
+                 FROM investment_transactions it JOIN investments i ON i.id = it.investment_id",
             )?,
         ),
         (
