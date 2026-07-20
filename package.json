@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "deploy": "node deploy.js",
     "build:test": "node build-app.js test",
-    "build:release": "node build-app.js release",
+    "release": "node build-app.js release",
     "start": "node start.js"
   },
   "dependencies": {

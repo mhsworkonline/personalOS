@@ -47,8 +47,22 @@ pub struct Document {
     pub notes: Option<String>,
     pub investment_id: Option<i64>,
     pub files: Vec<DocumentFileMeta>,
+    /// Files that live on disk rather than embedded in the database.
+    pub links: Vec<DocumentLinkMeta>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DocumentLinkMeta {
+    pub id: i64,
+    pub document_id: i64,
+    pub rel_path: String,
+    pub filename: String,
+    pub size: i64,
+    /// False when the file is no longer where the link points.
+    pub present: bool,
+    pub created_at: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -74,6 +88,48 @@ pub struct DocumentFileMeta {
     pub mime: String,
     pub size: i64,
     pub created_at: String,
+}
+
+/// One file found while scanning the documents folder. `status` is what the
+/// UI groups by: new / linked / moved / modified / missing / blocked.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ScanEntry {
+    pub rel_path: String,
+    pub filename: String,
+    pub folder: String,
+    pub sha256: String,
+    pub size: i64,
+    pub status: String,
+    /// Proposed (new) or actual (already linked) owner.
+    pub person_id: Option<i64>,
+    pub person_name: Option<String>,
+    pub doc_type: String,
+    /// False when the filename gave no real signal, so the UI can highlight
+    /// the rows actually worth reviewing.
+    pub confident: bool,
+    pub document_id: Option<i64>,
+    pub link_id: Option<i64>,
+    /// Why a file was blocked, or where a moved file now lives.
+    pub note: Option<String>,
+}
+
+/// Counts per status, so the UI can show a summary without walking the list.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ScanResult {
+    pub root: String,
+    pub entries: Vec<ScanEntry>,
+    pub unmapped_folders: Vec<String>,
+}
+
+/// One row the user accepted in the review grid.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ImportEntry {
+    pub rel_path: String,
+    pub filename: String,
+    pub sha256: String,
+    pub size: i64,
+    pub person_id: i64,
+    pub doc_type: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

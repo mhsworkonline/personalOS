@@ -30,8 +30,21 @@ touching crypto or storage.
 npm install
 npm run build            # tsc --noEmit (strict, noUnusedLocals) + vite
 cd src-tauri && cargo test   # data-layer + crypto + migration tests
-npm run tauri build      # release exe + NSIS installer
+
+npm start                # test build + launch it — the normal edit/test loop
+npm run release          # gated, bundled, distributable
+npm run release 1.1.0    # same, syncing the version across all three files
 ```
+
+- **`npm start`** is the default after any change: debug profile, `--no-bundle`
+  (no installer), output at `out/test/personalos.exe`, then launches it.
+- **`npm run release`** is only for explicit releases. It gates on typecheck +
+  `cargo test` first, then writes `out/release/` (exe + NSIS installer). Pass a
+  version to sync `package.json`, `Cargo.toml` and `tauri.conf.json` — without
+  it every installer keeps the same filename and Windows won't treat a newer
+  build as an upgrade.
+- `out/` is gitignored. Build artifacts must never be committed (they were,
+  until they got untracked — don't reintroduce them).
 
 - Debug binary needs `npm run dev` (Vite on :1420); the release binary is
   standalone.

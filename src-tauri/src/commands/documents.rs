@@ -14,7 +14,7 @@ use base64::Engine;
 use rusqlite::{params, Connection, Row};
 use tauri::State;
 
-pub const DOC_TYPES: [&str; 11] = [
+pub const DOC_TYPES: [&str; 14] = [
     "aadhaar",
     "pan",
     "passport",
@@ -25,6 +25,12 @@ pub const DOC_TYPES: [&str; 11] = [
     "health_card",
     "pension_card",
     "tax",
+    // Broader categories that identity-only types can't hold: marksheets and
+    // migration/leaving certificates, passbooks and cancelled cheques, bonds
+    // and undertakings. Without these they'd all collapse into "other".
+    "education",
+    "bank",
+    "legal",
     "other",
 ];
 
@@ -46,9 +52,47 @@ fn doc_from_row(r: &Row) -> rusqlite::Result<Document> {
         notes: r.get(8)?,
         investment_id: r.get(9)?,
         files: Vec::new(),
+        links: Vec::new(),
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
     })
+}
+
+/// On-disk files attached to a document, each flagged with whether it is still
+/// where the link points, so the UI can show a "missing" badge.
+fn links_for(conn: &Connection, document_id: i64) -> Result<Vec<crate::models::DocumentLinkMeta>, String> {
+    let root = super::doclib::root_path(conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, document_id, rel_path, filename, size, created_at
+             FROM document_links WHERE document_id = ?1 ORDER BY filename",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![document_id], |r| {
+            Ok(crate::models::DocumentLinkMeta {
+                id: r.get(0)?,
+                document_id: r.get(1)?,
+                rel_path: r.get(2)?,
+                filename: r.get(3)?,
+                size: r.get(4)?,
+                present: false,
+                created_at: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|mut l| {
+            l.present = root
+                .as_ref()
+                .map(|r| std::path::PathBuf::from(r).join(&l.rel_path).exists())
+                .unwrap_or(false);
+            l
+        })
+        .collect())
 }
 
 fn files_for(conn: &Connection, document_id: i64) -> Result<Vec<DocumentFileMeta>, String> {
@@ -91,6 +135,7 @@ pub fn documents_for(conn: &Connection, person: Option<i64>) -> Result<Vec<Docum
     .map_err(|e| e.to_string())?;
     for d in &mut docs {
         d.files = files_for(conn, d.id)?;
+        d.links = links_for(conn, d.id)?;
     }
     Ok(docs)
 }

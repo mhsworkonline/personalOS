@@ -63,7 +63,44 @@ export type DocType =
   | "health_card"
   | "pension_card"
   | "tax"
+  | "education"
+  | "bank"
+  | "legal"
   | "other";
+
+export interface DocumentLinkMeta {
+  id: number;
+  document_id: number;
+  rel_path: string;
+  filename: string;
+  size: number;
+  present: boolean;
+  created_at: string;
+}
+
+export type ScanStatus = "new" | "linked" | "moved" | "modified" | "missing" | "blocked";
+
+export interface ScanEntry {
+  rel_path: string;
+  filename: string;
+  folder: string;
+  sha256: string;
+  size: number;
+  status: ScanStatus;
+  person_id: number | null;
+  person_name: string | null;
+  doc_type: DocType;
+  confident: boolean;
+  document_id: number | null;
+  link_id: number | null;
+  note: string | null;
+}
+
+export interface ScanResult {
+  root: string;
+  entries: ScanEntry[];
+  unmapped_folders: string[];
+}
 
 export interface DocumentFileMeta {
   id: number;
@@ -87,6 +124,7 @@ export interface Doc {
   notes: string | null;
   investment_id: number | null;
   files: DocumentFileMeta[];
+  links: DocumentLinkMeta[];
   created_at: string;
   updated_at: string;
 }
@@ -502,6 +540,28 @@ export const api = {
   documentFileExport: (id: number, dest: string) =>
     invoke<void>("document_file_export", { id, dest }),
   documentFileDelete: (id: number) => invoke<void>("document_file_delete", { id }),
+
+  // document library (files linked on disk, never copied)
+  documentScan: () => invoke<ScanResult>("document_scan"),
+  documentImport: (
+    entries: {
+      rel_path: string;
+      filename: string;
+      sha256: string;
+      size: number;
+      person_id: number;
+      doc_type: DocType;
+    }[]
+  ) => invoke<number>("document_import", { entries }),
+  documentLinkRepair: (link: number, path: string) =>
+    invoke<void>("document_link_repair", { link, path }),
+  documentLinkRefresh: (link: number) => invoke<void>("document_link_refresh", { link }),
+  documentLinkDelete: (id: number) => invoke<void>("document_link_delete", { id }),
+  documentLinkPath: (id: number) => invoke<string>("document_link_path", { id }),
+  documentLinkOpen: (id: number) => invoke<void>("document_link_open", { id }),
+  documentFolderMapSet: (folder: string, person: number) =>
+    invoke<void>("document_folder_map_set", { folder, person }),
+  documentFolderMapList: () => invoke<Record<string, number>>("document_folder_map_list"),
 
   // dashboard / tasks / quick notes
   getDashboard: (days: number) => invoke<DashboardData>("get_dashboard", { days }),

@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod backup;
+pub mod doclib;
 pub mod documents;
 pub mod finance;
 pub mod investments;

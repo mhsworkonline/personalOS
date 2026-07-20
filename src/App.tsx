@@ -11,6 +11,7 @@ import Settings from "./modules/Settings";
 import UniversalSearch from "./modules/UniversalSearch";
 import QuickCapture from "./modules/QuickCapture";
 import People from "./modules/People";
+import DocumentLibrary from "./modules/DocumentLibrary";
 import Workbench from "./modules/workbench/Workbench";
 import {
   LayoutDashboard,
@@ -24,12 +25,14 @@ import {
   Zap,
   Lock,
   Home,
+  FolderOpen,
 } from "lucide-react";
 
 export type View =
   | "dashboard"
   | "workbench"
   | "people"
+  | "documents"
   | "vault"
   | "finance"
   | "investments"
@@ -188,6 +191,7 @@ export default function App() {
     { view: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={17} /> },
     { view: "workbench", label: "Workbench", icon: <Sparkles size={17} />, kbd: "Ctrl+K" },
     { view: "people", label: "People", icon: <Users size={17} /> },
+    { view: "documents", label: "Documents", icon: <FolderOpen size={17} /> },
     { view: "vault", label: "Vault", icon: <KeyRound size={17} />, kbd: "Ctrl+Shift+V" },
     { view: "finance", label: "Finance", icon: <Wallet size={17} /> },
     { view: "investments", label: "Investments", icon: <Home size={17} /> },
@@ -280,6 +284,9 @@ export default function App() {
               navigate={navigate}
               onChanged={dataChanged}
             />
+          )}
+          {view === "documents" && (
+            <DocumentLibrary refreshKey={refreshKey} onChanged={dataChanged} />
           )}
           {view === "vault" && <Vault refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "finance" && (

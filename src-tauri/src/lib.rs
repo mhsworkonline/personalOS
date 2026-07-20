@@ -26,6 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -65,6 +66,15 @@ pub fn run() {
             commands::documents::document_file_data,
             commands::documents::document_file_export,
             commands::documents::document_file_delete,
+            commands::doclib::document_scan,
+            commands::doclib::document_import,
+            commands::doclib::document_link_repair,
+            commands::doclib::document_link_refresh,
+            commands::doclib::document_link_delete,
+            commands::doclib::document_link_path,
+            commands::doclib::document_link_open,
+            commands::doclib::document_folder_map_set,
+            commands::doclib::document_folder_map_list,
             commands::vault::vault_list,
             commands::vault::vault_get,
             commands::vault::vault_save,

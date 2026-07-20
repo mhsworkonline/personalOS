@@ -1,6 +1,9 @@
 node_modules/
 dist/
 src-tauri/target/
+
+# built app artifacts (exes + installers) — regenerable, never commit them
+out/
 src-tauri/gen/schemas/
 *.log
 

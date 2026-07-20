@@ -96,6 +96,34 @@ decrypted copy only on explicit user action, to a location the user picks.
 Document numbers (Aadhaar, PAN, passport, …) are masked in the UI by default
 and are never added to the search index.
 
+## Linked documents (files that stay on disk)
+
+The Documents module can **link** files that live in a folder you choose
+(`documents_root`) instead of copying them in. For those files the database
+stores only a relative path, a SHA-256 and the metadata — **the file itself is
+never read into the database, never copied, and never modified.** Deleting
+PersonalOS leaves every linked file exactly where it was.
+
+The honest consequence: **linked files are not encrypted by this app.** They
+have whatever protection the filesystem gives them. Only the *metadata* about
+them (type, numbers, dates) gets the SQLCipher protection described above. If
+you want those files encrypted at rest, use full-disk encryption (BitLocker) or
+an encrypted volume for that folder — that is the operating system's job, not
+this app's.
+
+Two further consequences worth knowing:
+
+- **Backups cover metadata, not the bytes.** An encrypted backup restores the
+  document records and their pointers; the folder itself needs its own backup.
+  This is deliberate — a folder of PDFs can be backed up by any tool, with no
+  dependence on PersonalOS.
+- **Files whose names look like PIN/CVV/OTP material are refused** by the
+  scanner and never linked or indexed, mirroring the rejection of those keys in
+  account details. They are reported in the UI so the skip is never silent.
+
+Embedded attachments (the `document_files` BLOBs described above) are
+unaffected and keep their full at-rest encryption.
+
 ## Bank account credentials
 
 Bank details (branch, IFSC, CIF, net-banking login/password, MPIN, app PIN,

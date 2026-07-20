@@ -67,6 +67,9 @@ export const DOC_TYPES: { id: DocType; label: string }[] = [
   { id: "health_card", label: "Health Card" },
   { id: "pension_card", label: "Pension Card" },
   { id: "tax", label: "Tax Document" },
+  { id: "education", label: "Education" },
+  { id: "bank", label: "Bank Document" },
+  { id: "legal", label: "Legal Document" },
   { id: "other", label: "Other" },
 ];
 
@@ -250,6 +253,24 @@ function PersonDashboard({
   const toast = useToast();
   const [docEditing, setDocEditing] = useState<Doc | "new" | null>(null);
   const [docDeleting, setDocDeleting] = useState<Doc | null>(null);
+  const [docFilter, setDocFilter] = useState("");
+
+  // Matches the visible title, the type label and any linked filename, so
+  // "gujcet" or "marksheet" narrows a long list straight away.
+  const q = docFilter.trim().toLowerCase();
+  const filteredDocs = !q
+    ? overview.documents
+    : overview.documents.filter((d) =>
+        [
+          d.notes ?? "",
+          d.name_on_document ?? "",
+          docLabel(d.doc_type),
+          ...d.links.map((l) => l.filename),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
 
   const setPhoto = async () => {
     const path = await openDialog({
@@ -381,8 +402,16 @@ function PersonDashboard({
           }
           empty={overview.documents.length === 0 ? "No documents yet — Aadhaar, PAN, passport, insurance…" : undefined}
         >
+          {overview.documents.length > 6 && (
+            <input
+              className="ctl mb-2"
+              placeholder="Filter documents… (name, type, file)"
+              value={docFilter}
+              onChange={(e) => setDocFilter(e.target.value)}
+            />
+          )}
           <div className="grid grid-cols-2 gap-2">
-            {overview.documents.map((d) => (
+            {filteredDocs.map((d) => (
               <DocumentCard
                 key={d.id}
                 doc={d}
@@ -391,6 +420,9 @@ function PersonDashboard({
               />
             ))}
           </div>
+          {overview.documents.length > 0 && filteredDocs.length === 0 && (
+            <div className="text-mut text-[13px] py-2">No documents match "{docFilter}"</div>
+          )}
         </Section>
 
         {/* Bank accounts */}
@@ -578,27 +610,81 @@ function DocumentCard({
   onDelete: () => void;
 }) {
   const [shown, setShown] = useState(false);
+  const toast = useToast();
   const hasImages = doc.files.some((f) => f.kind === "front" || f.kind === "back");
   const attachments = doc.files.filter((f) => f.kind === "attachment").length;
+
+  // A linked file's own name is far more useful than the type label — with 26
+  // education records, "Education" 26 times identifies nothing.
+  const title = doc.notes?.trim() || doc.name_on_document?.trim() || docLabel(doc.doc_type);
+  const single = doc.links.length === 1 ? doc.links[0] : null;
+
+  const openLink = async (id: number) => {
+    try {
+      await api.documentLinkOpen(id);
+    } catch (e) {
+      toast(String(e), "bad");
+    }
+  };
+
   return (
-    <div className="border border-edge rounded-lg px-3 py-2.5 group">
+    <div
+      className={`border border-edge rounded-lg px-3 py-2.5 group ${
+        single ? "cursor-pointer hover:border-acc/50" : ""
+      }`}
+      onClick={single ? () => openLink(single.id) : undefined}
+      title={single ? `Open ${single.filename}` : undefined}
+    >
       <div className="flex items-center gap-2">
-        <span className="font-medium truncate">{docLabel(doc.doc_type)}</span>
+        <span className="font-medium truncate">{title}</span>
+        <span className="shrink-0 rounded-full border border-edge bg-panel2 px-1.5 py-px text-[10.5px] text-mut">
+          {docLabel(doc.doc_type)}
+        </span>
+        {single && !single.present && <span className="text-bad text-[11px] shrink-0">missing</span>}
         {doc.expiry_date && (
           <Tone tone={dueLabel(doc.expiry_date).tone}>
             expires {dueLabel(doc.expiry_date).text}
           </Tone>
         )}
         <span className="flex-1" />
-        <button className="opacity-0 group-hover:opacity-100 btn-ghost !p-1" onClick={onEdit}>
+        <button
+          className="opacity-0 group-hover:opacity-100 btn-ghost !p-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+        >
           <Pencil size={13} />
         </button>
-        <button className="opacity-0 group-hover:opacity-100 btn-ghost !p-1 text-bad" onClick={onDelete}>
+        <button
+          className="opacity-0 group-hover:opacity-100 btn-ghost !p-1 text-bad"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
           <Trash2 size={13} />
         </button>
       </div>
-      {doc.name_on_document && (
+      {doc.name_on_document && doc.name_on_document.trim() !== title && (
         <div className="text-mut text-[12px] truncate">{doc.name_on_document}</div>
+      )}
+      {/* Grouped identity documents hold several scans — list them all. */}
+      {doc.links.length > 1 && (
+        <div className="mt-1.5 flex flex-col gap-0.5" onClick={(e) => e.stopPropagation()}>
+          {doc.links.map((l) => (
+            <button
+              key={l.id}
+              className="flex items-center gap-1.5 text-[12px] text-left px-1.5 py-1 -mx-1.5 rounded-md hover:bg-panel2"
+              onClick={() => openLink(l.id)}
+              title={`Open ${l.filename}`}
+            >
+              <FileText size={11} className="shrink-0 text-mut" />
+              <span className="truncate flex-1">{l.filename}</span>
+              {!l.present && <span className="text-bad text-[11px]">missing</span>}
+            </button>
+          ))}
+        </div>
       )}
       {doc.doc_number && (
         <div className="flex items-center gap-1.5 text-[12.5px] font-mono mt-0.5">

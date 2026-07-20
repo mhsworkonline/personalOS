@@ -264,6 +264,30 @@ CREATE TABLE IF NOT EXISTS document_files (
   created_at TEXT NOT NULL
 );
 
+-- Documents that stay as real files on disk. The app stores only a pointer
+-- (path relative to the `documents_root` setting) plus a content hash, and
+-- never writes into that folder — delete the app and the files are untouched.
+-- Separate from document_files (whose BLOBs are embedded and encrypted) so
+-- existing embedded attachments keep working unchanged.
+CREATE TABLE IF NOT EXISTS document_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  rel_path TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+-- Remembers that the folder "moksh" means person #3, so every later scan
+-- assigns new files in it automatically instead of asking again.
+CREATE TABLE IF NOT EXISTS document_folder_map (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  folder TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  person_id INTEGER NOT NULL REFERENCES persons(id),
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS timeline_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_module TEXT NOT NULL,
@@ -487,6 +511,22 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         changed = true;
     }
 
+    // Documents now index their linked filenames and title themselves by
+    // filename rather than by type label. Anything indexed under the old shape
+    // is stale, so force exactly one rebuild.
+    const INDEX_VERSION: &str = "3";
+    let index_version: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = 'index_version'", [], |r| r.get(0))
+        .ok();
+    if index_version.as_deref() != Some(INDEX_VERSION) {
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('index_version', ?1)",
+            params![INDEX_VERSION],
+        )
+        .map_err(|e| format!("Migration failed setting index_version: {e}"))?;
+        changed = true;
+    }
+
     // The default person "Me" always exists.
     let me = ensure_default_person(conn)?;
 
@@ -669,6 +709,9 @@ pub fn doc_type_label(t: &str) -> &'static str {
         "health_card" => "Health Card",
         "pension_card" => "Pension Card",
         "tax" => "Tax Document",
+        "education" => "Education",
+        "bank" => "Bank Document",
+        "legal" => "Legal Document",
         _ => "Document",
     }
 }
@@ -748,9 +791,14 @@ pub fn rebuild_search_index(conn: &Connection) -> Result<(), String> {
         (
             "documents",
             collect(
-                "SELECT id, doc_type || ' ' || COALESCE(NULLIF(name_on_document,''), ''),
-                 'document ' || COALESCE(issuing_authority,'') || ' ' || COALESCE(notes,''), person_id
-                 FROM documents",
+                "SELECT d.id,
+                 COALESCE(NULLIF(TRIM(d.notes),''), NULLIF(TRIM(d.name_on_document),''), d.doc_type),
+                 'document ' || d.doc_type || ' ' || COALESCE(d.issuing_authority,'') || ' '
+                   || COALESCE(d.notes,'') || ' '
+                   || COALESCE((SELECT group_concat(l.filename, ' ') FROM document_links l
+                                WHERE l.document_id = d.id), ''),
+                 d.person_id
+                 FROM documents d",
             )?,
         ),
         (
