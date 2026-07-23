@@ -12,7 +12,10 @@ import UniversalSearch from "./modules/UniversalSearch";
 import QuickCapture from "./modules/QuickCapture";
 import People from "./modules/People";
 import DocumentLibrary from "./modules/DocumentLibrary";
-import Workbench from "./modules/workbench/Workbench";
+import Portfolio from "./modules/Portfolio";
+// Workbench is hidden for now (UI-only mock, no backend) — see CLAUDE.md
+// "Hidden modules". Its files remain under src/modules/workbench/ so it can be
+// revived by restoring the import, nav item, route and Ctrl+K shortcut below.
 import {
   LayoutDashboard,
   KeyRound,
@@ -20,12 +23,12 @@ import {
   StickyNote,
   Settings as SettingsIcon,
   Search,
-  Sparkles,
   Users,
   Zap,
   Lock,
   Home,
   FolderOpen,
+  TrendingUp,
 } from "lucide-react";
 
 export type View =
@@ -35,6 +38,7 @@ export type View =
   | "documents"
   | "vault"
   | "finance"
+  | "portfolio"
   | "investments"
   | "notes"
   | "settings";
@@ -75,7 +79,7 @@ export default function App() {
       setSetupRequired(s === "setup_required");
       if (s === "unlocked") {
         setStatus("unlocked");
-        loadSettings().then((set) => setView(set.start_on_workbench === "1" ? "workbench" : "dashboard"));
+        loadSettings().then(() => setView("dashboard")); // Workbench landing disabled while hidden
       } else {
         setStatus("locked");
       }
@@ -133,9 +137,6 @@ export default function App() {
       } else if (k === "n" && !e.shiftKey) {
         e.preventDefault();
         navigate({ view: "notes", recordModule: "notes", recordId: -1 }); // -1 = new note
-      } else if (k === "k") {
-        e.preventDefault();
-        navigate({ view: "workbench", recordModule: "home", recordId: -1 });
       } else if (k === "v" && e.shiftKey) {
         e.preventDefault();
         navigate({ view: "vault" });
@@ -180,7 +181,7 @@ export default function App() {
             setSetupRequired(false);
             setStatus("unlocked");
             lastActivity.current = Date.now();
-            loadSettings().then((set) => setView(set.start_on_workbench === "1" ? "workbench" : "dashboard"));
+            loadSettings().then(() => setView("dashboard")); // Workbench landing disabled while hidden
           }}
         />
       </ToastProvider>
@@ -189,11 +190,11 @@ export default function App() {
 
   const navItems: { view: View; label: string; icon: React.ReactNode; kbd?: string }[] = [
     { view: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={17} /> },
-    { view: "workbench", label: "Workbench", icon: <Sparkles size={17} />, kbd: "Ctrl+K" },
     { view: "people", label: "People", icon: <Users size={17} /> },
     { view: "documents", label: "Documents", icon: <FolderOpen size={17} /> },
     { view: "vault", label: "Vault", icon: <KeyRound size={17} />, kbd: "Ctrl+Shift+V" },
     { view: "finance", label: "Finance", icon: <Wallet size={17} /> },
+    { view: "portfolio", label: "Portfolio", icon: <TrendingUp size={17} /> },
     { view: "investments", label: "Investments", icon: <Home size={17} /> },
     { view: "notes", label: "Notes", icon: <StickyNote size={17} />, kbd: "Ctrl+N" },
   ];
@@ -275,7 +276,6 @@ export default function App() {
               onChanged={dataChanged}
             />
           )}
-          {view === "workbench" && <Workbench refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "people" && (
             <People
               refreshKey={refreshKey}
@@ -291,6 +291,9 @@ export default function App() {
           {view === "vault" && <Vault refreshKey={refreshKey} focus={focus} onChanged={dataChanged} />}
           {view === "finance" && (
             <Finance refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
+          )}
+          {view === "portfolio" && (
+            <Portfolio refreshKey={refreshKey} currency={currency} onChanged={dataChanged} />
           )}
           {view === "investments" && (
             <Investments refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />

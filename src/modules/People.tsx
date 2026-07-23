@@ -35,6 +35,7 @@ import {
   RefreshCcw,
   StickyNote,
   Trash2,
+  TrendingUp,
   UserPlus,
   UserRound,
 } from "lucide-react";
@@ -499,6 +500,26 @@ function PersonDashboard({
             </button>
           ))}
         </Section>
+
+        {/* Portfolio */}
+        {overview.holdings.length > 0 && (
+          <Section title={`Portfolio (${overview.holdings.length})`} icon={<TrendingUp size={14} />}>
+            {overview.holdings.map((h) => (
+              <button
+                key={h.id}
+                className="w-full flex items-center gap-2 py-1.5 hover:bg-panel2 rounded-md px-1.5 -mx-1.5 text-left"
+                onClick={() => navigate({ view: "portfolio", recordModule: "holdings", recordId: h.id })}
+              >
+                <span className="flex-1 truncate">{h.symbol}</span>
+                <span>{fmtMoney(h.current, currency)}</span>
+                <span className={`text-[12px] w-20 text-right ${h.pnl >= 0 ? "text-ok" : "text-bad"}`}>
+                  {h.pnl >= 0 ? "+" : ""}
+                  {h.pnl_pct.toFixed(1)}%
+                </span>
+              </button>
+            ))}
+          </Section>
+        )}
 
         {/* Tasks */}
         <Section

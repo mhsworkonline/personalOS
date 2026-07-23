@@ -54,6 +54,8 @@ function targetFor(r: SearchResult): NavTarget {
       return { view: "finance", recordModule: r.module, recordId: r.record_id };
     case "investments":
       return { view: "investments", recordModule: "investments", recordId: r.record_id };
+    case "holdings":
+      return { view: "portfolio", recordModule: "holdings", recordId: r.record_id };
     case "investment_transactions":
       return { view: "investments" };
     case "chat":

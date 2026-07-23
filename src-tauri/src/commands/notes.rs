@@ -5,8 +5,12 @@ use super::with_db;
 use crate::db::{self, index_record, log_activity, sync_timeline, unindex_record};
 use crate::models::{Folder, Note, NoteInput, NoteMeta};
 use crate::AppState;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use rusqlite::{params, Connection};
 use tauri::State;
+
+const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Folders
@@ -275,6 +279,7 @@ pub fn note_save(state: State<'_, AppState>, input: NoteInput) -> Result<Note, S
             }
         };
         set_tags(conn, id, &input.tags)?;
+        prune_note_images(conn, id, &input.content)?;
         let tags = note_tags(conn, id)?;
         let body = format!("{} {}", input.content, tags.join(" "));
         index_record(conn, "notes", id, &title, &body, Some(person_id))?;
@@ -347,6 +352,97 @@ pub fn note_set_reminder(
             person_id,
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Pasted images (stored as encrypted BLOBs; referenced from markdown as
+// `asset:<id>` and resolved to data URIs when the note is previewed)
+// ---------------------------------------------------------------------------
+
+/// Store one pasted image against a note, returning its id. `data` is base64
+/// without the `data:` prefix; `mime` must be an image type.
+#[tauri::command]
+pub fn note_image_add(
+    state: State<'_, AppState>,
+    note: i64,
+    data: String,
+    mime: String,
+) -> Result<i64, String> {
+    if !mime.starts_with("image/") {
+        return Err("Only images can be pasted here".into());
+    }
+    let bytes = B64.decode(data.as_bytes()).map_err(|_| "Invalid image data".to_string())?;
+    if bytes.is_empty() {
+        return Err("Empty image".into());
+    }
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!("Image too large (max {} MB)", MAX_IMAGE_BYTES / 1024 / 1024));
+    }
+    with_db(&state, |conn| {
+        conn.query_row("SELECT id FROM notes WHERE id = ?1", params![note], |r| r.get::<_, i64>(0))
+            .map_err(|_| "Note not found".to_string())?;
+        conn.execute(
+            "INSERT INTO note_images (note_id, mime, data, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![note, mime, bytes, db::now()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
+/// Ids of a note's pasted images, oldest first — so the editor can show a
+/// thumbnail strip without pulling every blob up front.
+#[tauri::command]
+pub fn note_image_list(state: State<'_, AppState>, note: i64) -> Result<Vec<i64>, String> {
+    with_db(&state, |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id FROM note_images WHERE note_id = ?1 ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![note], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    })
+}
+
+/// A pasted image as a `data:` URI, for the markdown preview.
+#[tauri::command]
+pub fn note_image_data(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    with_db(&state, |conn| {
+        let (mime, data): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT mime, data FROM note_images WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| "Image not found".to_string())?;
+        Ok(format!("data:{mime};base64,{}", B64.encode(&data)))
+    })
+}
+
+/// Drop any of a note's images no longer referenced by `asset:<id>` in its
+/// content, so removing an image from the text reclaims its space on next save.
+fn prune_note_images(conn: &Connection, note_id: i64, content: &str) -> Result<(), String> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM note_images WHERE note_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![note_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    for id in ids {
+        if !content.contains(&format!("asset:{id}")) {
+            conn.execute("DELETE FROM note_images WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

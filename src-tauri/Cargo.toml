@@ -1,6 +1,6 @@
 [package]
 name = "personalos"
-version = "1.0.0"
+version = "1.0.2"
 description = "PersonalOS - offline-first personal dashboard, vault, finance and notes"
 edition = "2021"
 
@@ -21,6 +21,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 zeroize = "1"
 base64 = "0.22"
 hex = "0.4"
+# On-demand live quote fetch (user-initiated only). Synchronous + rustls, so
+# no tokio/OpenSSL; the only network calls the app ever makes.
+ureq = { version = "2", features = ["json"] }
 tauri-plugin-opener = "2.5.4"
 sha2 = "0.11.0"
 walkdir = "2.5.0"

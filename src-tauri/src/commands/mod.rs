@@ -6,6 +6,7 @@ pub mod finance;
 pub mod investments;
 pub mod notes;
 pub mod people;
+pub mod portfolio;
 pub mod search;
 pub mod settings;
 pub mod tasks;

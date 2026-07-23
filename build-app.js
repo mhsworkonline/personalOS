@@ -18,7 +18,15 @@
 // ./out/ is gitignored — build artifacts must never reach the repo.
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const mode = process.argv[2];
@@ -94,12 +102,22 @@ if (mode === "release") {
 }
 
 killRunningApp();
+
+// Clear stale installers from a previous version out of the bundle dir, so the
+// copy step can't pick up e.g. a 1.0.0 setup left over when building 1.0.1.
+const nsisDir = join(targetDir, "bundle", "nsis");
+if (mode === "release" && existsSync(nsisDir)) {
+  rmSync(nsisDir, { recursive: true, force: true });
+}
+
 run(
   mode === "test"
     ? "npm run tauri build -- --debug --no-bundle"
     : "npm run tauri build"
 );
 
+// Start from a clean destination so old artifacts never linger beside new ones.
+rmSync(destDir, { recursive: true, force: true });
 mkdirSync(destDir, { recursive: true });
 copyFileSync(join(targetDir, "personalos.exe"), join(destDir, "personalos.exe"));
 console.log(`\nCopied personalos.exe -> ${join(destDir, "personalos.exe")}`);
@@ -107,7 +125,6 @@ console.log(`\nCopied personalos.exe -> ${join(destDir, "personalos.exe")}`);
 // Only release builds bundle an installer. Guarded on mode, not on the folder
 // existing — a --no-bundle test build leaves any earlier installer sitting in
 // target/, and copying that stale file would be worse than shipping none.
-const nsisDir = join(targetDir, "bundle", "nsis");
 if (mode === "release" && existsSync(nsisDir)) {
   for (const f of readdirSync(nsisDir).filter((f) => f.endsWith(".exe"))) {
     copyFileSync(join(nsisDir, f), join(destDir, f));

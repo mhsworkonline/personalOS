@@ -181,6 +181,24 @@ CREATE TABLE IF NOT EXISTS folders (
   created_at TEXT NOT NULL
 );
 
+-- Portfolio holdings (stocks and mutual funds/ETFs). Manual prices, offline —
+-- unrealized P&L is computed from quantity, avg cost and last known price.
+CREATE TABLE IF NOT EXISTS holdings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  kind TEXT NOT NULL DEFAULT 'stock',
+  quantity REAL NOT NULL DEFAULT 0,
+  avg_cost REAL NOT NULL DEFAULT 0,
+  last_price REAL NOT NULL DEFAULT 0,
+  price_date TEXT,
+  notes TEXT,
+  quote_key TEXT,
+  person_id INTEGER REFERENCES persons(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -195,6 +213,17 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+
+-- Images pasted into a note, stored as BLOBs inside the encrypted database
+-- (same at-rest protection as everything else). The note's markdown refers to
+-- them by id as `asset:<id>`; deleting the note removes its images too.
+CREATE TABLE IF NOT EXISTS note_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS note_tags (
@@ -386,6 +415,14 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
              ), 0);",
         )
         .map_err(|e| format!("Migration failed backfilling accounts.opening_balance: {e}"))?;
+        changed = true;
+    }
+
+    // Portfolio: optional quote key (Yahoo symbol / AMFI scheme code) for the
+    // on-demand live price fetch.
+    if table_exists(conn, "holdings")? && !has_column(conn, "holdings", "quote_key")? {
+        conn.execute_batch("ALTER TABLE holdings ADD COLUMN quote_key TEXT;")
+            .map_err(|e| format!("Migration failed on holdings.quote_key: {e}"))?;
         changed = true;
     }
 
@@ -806,6 +843,13 @@ pub fn rebuild_search_index(conn: &Connection) -> Result<(), String> {
             collect(
                 "SELECT id, name, kind || ' ' || COALESCE(address,'') || ' ' || COALESCE(notes,''), person_id
                  FROM investments",
+            )?,
+        ),
+        (
+            "holdings",
+            collect(
+                "SELECT id, symbol, kind || ' ' || COALESCE(name,'') || ' ' || COALESCE(notes,''), person_id
+                 FROM holdings",
             )?,
         ),
         (

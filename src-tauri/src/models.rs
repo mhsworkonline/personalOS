@@ -142,6 +142,7 @@ pub struct PersonOverview {
     pub notes: Vec<NoteMeta>,
     pub subscriptions: Vec<Subscription>,
     pub investments: Vec<InvestmentSummary>,
+    pub holdings: Vec<Holding>,
     pub tasks: Vec<Task>,
     pub timeline: Vec<TimelineEvent>,
 }
@@ -166,6 +167,75 @@ pub struct QuickNote {
     pub id: i64,
     pub content: String,
     pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio (stocks / mutual funds — manual prices, offline)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Holding {
+    pub id: i64,
+    pub symbol: String,
+    pub name: Option<String>,
+    pub kind: String, // "stock" | "fund"
+    pub quantity: f64,
+    pub avg_cost: f64,
+    pub last_price: f64,
+    pub price_date: Option<String>,
+    pub notes: Option<String>,
+    /// Yahoo symbol (e.g. RELIANCE.NS) for stocks, AMFI scheme code for funds.
+    /// Only holdings with this set can be refreshed by the live fetch.
+    pub quote_key: Option<String>,
+    pub person_id: Option<i64>,
+    // Computed, not stored:
+    pub invested: f64,
+    pub current: f64,
+    pub pnl: f64,
+    pub pnl_pct: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HoldingInput {
+    pub id: Option<i64>,
+    pub symbol: String,
+    pub name: Option<String>,
+    pub kind: String,
+    pub quantity: f64,
+    pub avg_cost: f64,
+    pub last_price: f64,
+    pub price_date: Option<String>,
+    pub notes: Option<String>,
+    pub quote_key: Option<String>,
+    pub person_id: Option<i64>,
+}
+
+/// Portfolio totals across all holdings (for the summary cards).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PortfolioSummary {
+    pub invested: f64,
+    pub current: f64,
+    pub pnl: f64,
+    pub pnl_pct: f64,
+    pub count: i64,
+}
+
+/// One holding to look up a live price for.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuoteRequest {
+    pub id: i64,
+    pub kind: String,
+    pub quote_key: String,
+}
+
+/// Result of a live price lookup for one holding.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuoteResult {
+    pub id: i64,
+    pub price: Option<f64>,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +432,8 @@ pub struct FinanceOverview {
     pub liabilities: f64,
     pub net_worth: f64,
     pub by_kind: Vec<KindTotal>,
+    /// Current value of all portfolio holdings, folded into assets + net worth.
+    pub portfolio_value: f64,
     pub monthly_subscriptions: f64,
     pub monthly_emi: f64,
     pub active_subscriptions: i64,

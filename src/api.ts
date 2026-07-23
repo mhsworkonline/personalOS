@@ -151,6 +151,7 @@ export interface PersonOverview {
   notes: NoteMeta[];
   subscriptions: Subscription[];
   investments: InvestmentSummary[];
+  holdings: Holding[];
   tasks: Task[];
   timeline: TimelineEvent[];
 }
@@ -357,10 +358,47 @@ export interface FinanceOverview {
   liabilities: number;
   net_worth: number;
   by_kind: { kind: AccountKind; total: number; count: number }[];
+  portfolio_value: number;
   monthly_subscriptions: number;
   monthly_emi: number;
   active_subscriptions: number;
   active_emis: number;
+}
+
+export type HoldingKind = "stock" | "fund";
+
+export interface Holding {
+  id: number;
+  symbol: string;
+  name: string | null;
+  kind: HoldingKind;
+  quantity: number;
+  avg_cost: number;
+  last_price: number;
+  price_date: string | null;
+  notes: string | null;
+  quote_key: string | null;
+  person_id: number | null;
+  invested: number;
+  current: number;
+  pnl: number;
+  pnl_pct: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PortfolioSummary {
+  invested: number;
+  current: number;
+  pnl: number;
+  pnl_pct: number;
+  count: number;
+}
+
+export interface QuoteResult {
+  id: number;
+  price: number | null;
+  error: string | null;
 }
 
 export interface MonthlyFlow {
@@ -590,6 +628,28 @@ export const api = {
   vaultSave: (input: VaultItemInput) => invoke<VaultItem>("vault_save", { input }),
   vaultDelete: (id: number) => invoke<void>("vault_delete", { id }),
 
+  // portfolio
+  holdingList: () => invoke<Holding[]>("holding_list"),
+  portfolioSummary: () => invoke<PortfolioSummary>("portfolio_summary"),
+  holdingSave: (input: {
+    id: number | null;
+    symbol: string;
+    name: string | null;
+    kind: HoldingKind;
+    quantity: number;
+    avg_cost: number;
+    last_price: number;
+    price_date: string | null;
+    notes: string | null;
+    quote_key: string | null;
+    person_id: number | null;
+  }) => invoke<Holding>("holding_save", { input }),
+  holdingSetPrice: (id: number, price: number, date: string | null) =>
+    invoke<Holding>("holding_set_price", { id, price, date }),
+  holdingDelete: (id: number) => invoke<void>("holding_delete", { id }),
+  quoteFetch: (items: { id: number; kind: HoldingKind; quote_key: string }[]) =>
+    invoke<QuoteResult[]>("quote_fetch", { items }),
+
   // finance
   financeOverview: () => invoke<FinanceOverview>("finance_overview"),
   financeCharts: () => invoke<FinanceCharts>("finance_charts"),
@@ -687,6 +747,10 @@ export const api = {
   noteDelete: (id: number) => invoke<void>("note_delete", { id }),
   noteSetReminder: (id: number, date: string | null) =>
     invoke<void>("note_set_reminder", { id, date }),
+  noteImageAdd: (note: number, data: string, mime: string) =>
+    invoke<number>("note_image_add", { note, data, mime }),
+  noteImageList: (note: number) => invoke<number[]>("note_image_list", { note }),
+  noteImageData: (id: number) => invoke<string>("note_image_data", { id }),
   tagList: () => invoke<string[]>("tag_list"),
 
   // search / settings / backup

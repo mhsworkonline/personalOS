@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Account,
   api,
@@ -16,6 +16,7 @@ import {
   Confirm,
   Empty,
   Field,
+  FilterBar,
   Modal,
   PersonBadge,
   personLabel,
@@ -74,6 +75,40 @@ export default function Investments({
   const [openId, setOpenId] = useState<number | null>(null);
   const toast = useToast();
 
+  // Filters (view-only; reset on navigation).
+  const [status, setStatus] = useState<InvestmentStatus | "">("");
+  const [kind, setKind] = useState<InvestmentKind | "">("");
+  const [personId, setPersonId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"name" | "value">("name");
+
+  const filtersActive =
+    status !== "" || kind !== "" || personId != null || search.trim() !== "" || sort !== "name";
+  const clearFilters = () => {
+    setStatus("");
+    setKind("");
+    setPersonId(null);
+    setSearch("");
+    setSort("name");
+  };
+
+  const q = search.trim().toLowerCase();
+  const shown = useMemo(() => {
+    const list = items.filter((inv) => {
+      if (status && inv.status !== status) return false;
+      if (kind && inv.kind !== kind) return false;
+      if (personId != null && inv.person_id !== personId) return false;
+      if (q && !`${inv.name} ${inv.address ?? ""}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    list.sort((a, b) =>
+      sort === "value"
+        ? b.total_purchase - a.total_purchase
+        : a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    );
+    return list;
+  }, [items, status, kind, personId, q, sort]);
+
   const load = useCallback(() => {
     api.investmentList().then(setItems).catch(() => {});
   }, []);
@@ -99,14 +134,74 @@ export default function Investments({
       </div>
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-[860px]">
+          {items.length > 0 && (
+            <>
+              <FilterBar active={filtersActive} onClear={clearFilters}>
+                <select
+                  className="ctl !py-1 !w-auto text-[12.5px]"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as InvestmentStatus | "")}
+                >
+                  <option value="">Any status</option>
+                  <option value="owned">Owned</option>
+                  <option value="rented">Rented</option>
+                  <option value="sold">Sold</option>
+                </select>
+                <select
+                  className="ctl !py-1 !w-auto text-[12.5px]"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as InvestmentKind | "")}
+                >
+                  <option value="">Any type</option>
+                  {Object.entries(KIND_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="ctl !py-1 !w-auto text-[12.5px]"
+                  value={personId ?? ""}
+                  onChange={(e) => setPersonId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">Everyone</option>
+                  {people.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {personLabel(p)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="ctl !py-1 !w-auto text-[12.5px]"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as "name" | "value")}
+                >
+                  <option value="name">Sort: name</option>
+                  <option value="value">Sort: value</option>
+                </select>
+                <input
+                  className="ctl !py-1 !w-44 text-[12.5px]"
+                  placeholder="Search name or address…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </FilterBar>
+              <div className="text-mut text-[12.5px] mb-2 px-1">
+                {shown.length} of {items.length} shown
+              </div>
+            </>
+          )}
           {items.length === 0 && (
             <Empty
               text="No properties yet"
               hint="Track land, plots, flats or houses you own — purchase, rent income and eventual sale."
             />
           )}
+          {items.length > 0 && shown.length === 0 && (
+            <Empty text="No properties match these filters" hint="Try clearing the filters." />
+          )}
           <div className="flex flex-col gap-2">
-            {items.map((inv) => (
+            {shown.map((inv) => (
               <div
                 key={inv.id}
                 className="card px-4 py-3 flex items-center gap-3 group cursor-pointer hover:border-acc/40"

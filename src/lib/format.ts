@@ -44,6 +44,42 @@ export function daysUntil(iso: string): number {
   return Math.round((target.getTime() - today.getTime()) / 86400000);
 }
 
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+export type DatePreset = "all" | "this_month" | "last_month" | "last_3m" | "this_fy" | "custom";
+
+export const DATE_PRESETS: { id: DatePreset; label: string }[] = [
+  { id: "all", label: "All time" },
+  { id: "this_month", label: "This month" },
+  { id: "last_month", label: "Last month" },
+  { id: "last_3m", label: "Last 3 months" },
+  { id: "this_fy", label: "This FY (Apr–Mar)" },
+  { id: "custom", label: "Custom range" },
+];
+
+/** {from,to} (inclusive, YYYY-MM-DD) for a preset, or null bounds for "all". */
+export function presetRange(p: DatePreset): { from: string | null; to: string | null } {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (p) {
+    case "this_month":
+      return { from: iso(new Date(y, m, 1)), to: iso(new Date(y, m + 1, 0)) };
+    case "last_month":
+      return { from: iso(new Date(y, m - 1, 1)), to: iso(new Date(y, m, 0)) };
+    case "last_3m":
+      return { from: iso(new Date(y, m - 2, 1)), to: iso(new Date(y, m + 1, 0)) };
+    case "this_fy": {
+      // Indian financial year: 1 Apr – 31 Mar.
+      const fyStart = m >= 3 ? y : y - 1;
+      return { from: iso(new Date(fyStart, 3, 1)), to: iso(new Date(fyStart + 1, 2, 31)) };
+    }
+    default:
+      return { from: null, to: null };
+  }
+}
+
 export function dueLabel(iso: string): { text: string; tone: "bad" | "warn" | "mut" } {
   const days = daysUntil(iso);
   if (days < 0) return { text: `${-days}d overdue`, tone: "bad" };

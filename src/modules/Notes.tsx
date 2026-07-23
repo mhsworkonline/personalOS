@@ -310,8 +310,70 @@ function NoteEditor({
   const [preview, setPreview] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [reminderOpen, setReminderOpen] = useState(false);
+  // Resolved data URIs for pasted images, keyed by their `asset:<id>` id.
+  const [images, setImages] = useState<Record<number, string>>({});
+  const [imageIds, setImageIds] = useState<number[]>([]);
+  const [zoom, setZoom] = useState<string | null>(null);
   const toast = useToast();
   const saveTimer = useRef<number | undefined>(undefined);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Load this note's pasted images up front so they show as thumbnails in the
+  // editor (not just under Preview).
+  useEffect(() => {
+    let alive = true;
+    api
+      .noteImageList(note.id)
+      .then(async (ids) => {
+        if (!alive) return;
+        setImageIds(ids);
+        const pairs = await Promise.all(
+          ids.map((id) =>
+            api
+              .noteImageData(id)
+              .then((d) => [id, d] as const)
+              .catch(() => [id, ""] as const)
+          )
+        );
+        if (alive) setImages((m) => ({ ...m, ...Object.fromEntries(pairs) }));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [note.id]);
+
+  // Store a pasted image as a BLOB, then drop an `asset:<id>` markdown ref at
+  // the cursor. Kept out of the text itself so the editor never fills with a
+  // giant base64 string.
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const item = Array.from(e.clipboardData.items).find((i) => i.type.startsWith("image/"));
+      if (!item) return;
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) return;
+      try {
+        const buf = await file.arrayBuffer();
+        let binary = "";
+        const bytes = new Uint8Array(buf);
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const b64 = btoa(binary);
+        const id = await api.noteImageAdd(note.id, b64, file.type);
+        const el = textareaRef.current;
+        const snippet = `\n![pasted image](asset:${id})\n`;
+        const at = el ? el.selectionStart : content.length;
+        const next = content.slice(0, at) + snippet + content.slice(at);
+        setContent(next);
+        setImages((m) => ({ ...m, [id]: `data:${file.type};base64,${b64}` }));
+        setImageIds((ids) => [...ids, id]);
+        setDirty(true);
+      } catch (err) {
+        toast(String(err), "bad");
+      }
+    },
+    [note.id, content, toast]
+  );
 
   const doSave = useCallback(
     async (opts?: {
@@ -362,10 +424,32 @@ function NoteEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [doSave]);
 
-  const rendered = useMemo(
-    () => (preview ? DOMPurify.sanitize(marked.parse(content) as string) : ""),
-    [preview, content]
-  );
+  // Before previewing, pull in any referenced image not already resolved.
+  useEffect(() => {
+    if (!preview) return;
+    const ids = [...content.matchAll(/asset:(\d+)/g)].map((m) => Number(m[1]));
+    const missing = ids.filter((id) => !(id in images));
+    if (missing.length === 0) return;
+    Promise.all(
+      missing.map((id) =>
+        api
+          .noteImageData(id)
+          .then((d) => [id, d] as const)
+          .catch(() => [id, ""] as const)
+      )
+    ).then((pairs) => setImages((m) => ({ ...m, ...Object.fromEntries(pairs) })));
+  }, [preview, content, images]);
+
+  const rendered = useMemo(() => {
+    if (!preview) return "";
+    // Swap each `asset:<id>` src for its data URI, then sanitize (the CSP and
+    // DOMPurify both allow data: images, but not the bare asset: scheme).
+    const html = (marked.parse(content) as string).replace(
+      /(<img[^>]*\bsrc=")asset:(\d+)(")/g,
+      (_full, pre, id, post) => `${pre}${images[Number(id)] ?? ""}${post}`
+    );
+    return DOMPurify.sanitize(html);
+  }, [preview, content, images]);
 
   return (
     <div className="h-full flex flex-col">
@@ -461,15 +545,51 @@ function NoteEditor({
       {preview ? (
         <div className="flex-1 overflow-y-auto px-5 py-4 md" dangerouslySetInnerHTML={{ __html: rendered }} />
       ) : (
-        <textarea
-          className="flex-1 bg-transparent outline-none resize-none px-5 py-4 leading-relaxed font-[Consolas,monospace] text-[13.5px]"
-          placeholder="Write in markdown…"
-          value={content}
-          onChange={(e) => {
-            setContent(e.target.value);
-            setDirty(true);
-          }}
-        />
+        <div className="flex-1 flex flex-col min-h-0">
+          <textarea
+            ref={textareaRef}
+            className="flex-1 bg-transparent outline-none resize-none px-5 py-4 leading-relaxed font-[Consolas,monospace] text-[13.5px]"
+            placeholder="Write in markdown…  (paste an image to embed it)"
+            value={content}
+            onPaste={handlePaste}
+            onChange={(e) => {
+              setContent(e.target.value);
+              setDirty(true);
+            }}
+          />
+          {imageIds.length > 0 && (
+            <div className="shrink-0 border-t border-edge px-5 py-2.5">
+              <div className="text-[11px] uppercase tracking-wide text-mut mb-1.5">
+                Pasted images · click to enlarge, or switch to Preview to see them in place
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {imageIds.map((id) => (
+                  <button
+                    key={id}
+                    className="h-16 w-16 rounded-md border border-edge overflow-hidden bg-panel2 hover:border-acc/60"
+                    title="Click to enlarge"
+                    onClick={() => images[id] && setZoom(images[id])}
+                  >
+                    {images[id] ? (
+                      <img src={images[id]} alt="pasted" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-mut text-[10px]">…</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {zoom && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-zoom-out"
+          onClick={() => setZoom(null)}
+        >
+          <img src={zoom} alt="pasted" className="max-h-full max-w-full rounded-lg" />
+        </div>
       )}
 
       {reminderOpen && (

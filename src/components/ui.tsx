@@ -165,6 +165,32 @@ export function Field({
   );
 }
 
+/** Consistent filter row used by Finance and Investments: a wrapping row of
+ *  compact controls plus an optional "Clear" chip when any filter is active. */
+export function FilterBar({
+  children,
+  active,
+  onClear,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  onClear?: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-3">
+      {children}
+      {active && onClear && (
+        <button
+          className="text-[12px] text-mut hover:text-ink rounded-full border border-edge px-2 py-1"
+          onClick={onClear}
+        >
+          <X size={12} className="inline -mt-px mr-0.5" /> Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Empty({ text, hint }: { text: string; hint?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-10 text-center">

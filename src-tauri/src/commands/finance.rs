@@ -1068,6 +1068,11 @@ pub fn finance_overview(state: State<'_, AppState>) -> Result<FinanceOverview, S
                 assets += kt.total;
             }
         }
+        // Portfolio (stocks/funds) counts toward assets at current value.
+        let portfolio_value: f64 = conn
+            .query_row("SELECT COALESCE(SUM(quantity * last_price), 0) FROM holdings", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        assets += portfolio_value;
         // Remaining EMI principal counts as a liability.
         let emi_remaining: f64 = conn
             .query_row(
@@ -1105,6 +1110,7 @@ pub fn finance_overview(state: State<'_, AppState>) -> Result<FinanceOverview, S
             liabilities,
             net_worth: assets - liabilities,
             by_kind,
+            portfolio_value,
             monthly_subscriptions,
             monthly_emi,
             active_subscriptions,

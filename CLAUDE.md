@@ -23,6 +23,20 @@ touching crypto or storage.
   (FK-safe order) or backups will silently miss them.
 - Keep the architecture boring: no plugin systems, no DI, no multi-user.
 
+## Hidden modules
+
+- **Workbench** (`src/modules/workbench/`) is a UI-only preview with **no
+  backend** — every screen reads from `mockData.ts`, its types are not in
+  `api.ts`, and it needs a network egress (`src-tauri/src/ai.rs`, unbuilt) to
+  ever function. See `AI_WORKBENCH_DESIGN.md` for the full intended design.
+  It is currently **hidden from the app** (2026-07): removed from the sidebar,
+  routing and Ctrl+K in `App.tsx`, and gated behind `SHOW_WORKBENCH = false`
+  in `Settings.tsx` (hides the AI-Providers preview and start-on-Workbench
+  toggle). The module files are intentionally kept, not deleted. **To revive:**
+  restore the import/nav item/route/Ctrl+K in `App.tsx`, flip `SHOW_WORKBENCH`
+  to `true`, then build the real backend per the design doc. Revisit when
+  there's appetite to build live AI chat.
+
 ## Build & test (Windows)
 
 ```

@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Account,
   AccountDetails,
@@ -18,6 +18,7 @@ import {
   Confirm,
   Empty,
   Field,
+  FilterBar,
   MasterGate,
   Modal,
   PersonBadge,
@@ -25,7 +26,15 @@ import {
   Tone,
   useToast,
 } from "../components/ui";
-import { dueLabel, fmtDate, fmtMoney, todayISO } from "../lib/format";
+import {
+  DATE_PRESETS,
+  DatePreset,
+  dueLabel,
+  fmtDate,
+  fmtMoney,
+  presetRange,
+  todayISO,
+} from "../lib/format";
 import { ArrowLeftRight, Check, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 type Tab = "overview" | "accounts" | "transactions" | "subscriptions" | "emis";
@@ -97,7 +106,7 @@ export default function Finance({
           <Accounts refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
         )}
         {tab === "transactions" && (
-          <Transactions refreshKey={refreshKey} currency={currency} onChanged={onChanged} />
+          <Transactions refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
         )}
         {tab === "subscriptions" && (
           <Subscriptions refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
@@ -163,6 +172,12 @@ function Overview({ refreshKey, currency }: { refreshKey: number; currency: stri
               </span>
             </div>
           ))}
+          {data.portfolio_value > 0 && (
+            <div className="flex justify-between py-1.5 border-b border-edge last:border-0">
+              <span>Portfolio <span className="text-mut text-[12px]">stocks &amp; funds</span></span>
+              <span>{fmtMoney(data.portfolio_value, currency)}</span>
+            </div>
+          )}
         </div>
         <div className="card p-4">
           <div className="text-[13px] uppercase tracking-wide text-mut font-semibold mb-3">
@@ -814,24 +829,39 @@ function AccountEditor({
 // Transactions
 // ---------------------------------------------------------------------------
 
+type TxType = "all" | "income" | "expense" | "transfers";
+
 function Transactions({
   refreshKey,
+  people,
   currency,
   onChanged,
 }: {
   refreshKey: number;
+  people: Person[];
   currency: string;
   onChanged: () => void;
 }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<TransactionCategory[]>([]);
   const [txs, setTxs] = useState<Transaction[]>([]);
-  const [filter, setFilter] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [transferring, setTransferring] = useState(false);
   const [managingCategories, setManagingCategories] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Transaction | null>(null);
+
+  // Filters (view-only; reset on navigation).
+  const [account, setAccount] = useState<number | null>(null);
+  const [personId, setPersonId] = useState<number | null>(null);
+  const [preset, setPreset] = useState<DatePreset>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [type, setType] = useState<TxType>("all");
+  const [category, setCategory] = useState("");
+  const [minAmt, setMinAmt] = useState("");
+  const [maxAmt, setMaxAmt] = useState("");
+  const [search, setSearch] = useState("");
 
   const loadCategories = useCallback(() => {
     api.categoryList().then(setCategories).catch(() => {});
@@ -839,26 +869,79 @@ function Transactions({
 
   const load = useCallback(() => {
     api.accountList().then(setAccounts).catch(() => {});
-    api.transactionList(filter, 200).then(setTxs).catch(() => {});
+    // Pull a wide window so date/amount filters have real data to work over.
+    api.transactionList(account, 1000).then(setTxs).catch(() => {});
     loadCategories();
-  }, [filter, loadCategories]);
+  }, [account, loadCategories]);
   useEffect(load, [load, refreshKey]);
 
+  const filtersActive =
+    personId != null ||
+    preset !== "all" ||
+    type !== "all" ||
+    category !== "" ||
+    minAmt !== "" ||
+    maxAmt !== "" ||
+    search.trim() !== "";
+
+  const clearFilters = () => {
+    setPersonId(null);
+    setPreset("all");
+    setCustomFrom("");
+    setCustomTo("");
+    setType("all");
+    setCategory("");
+    setMinAmt("");
+    setMaxAmt("");
+    setSearch("");
+  };
+
+  const range = preset === "custom" ? { from: customFrom || null, to: customTo || null } : presetRange(preset);
+  const accountPerson = useMemo(
+    () => Object.fromEntries(accounts.map((a) => [a.id, a.person_id])),
+    [accounts]
+  );
+  const min = parseFloat(minAmt);
+  const max = parseFloat(maxAmt);
+  const q = search.trim().toLowerCase();
+
+  const filtered = useMemo(
+    () =>
+      txs.filter((t) => {
+        if (personId != null && accountPerson[t.account_id] !== personId) return false;
+        if (range.from && t.date < range.from) return false;
+        if (range.to && t.date > range.to) return false;
+        if (type === "income" && t.kind !== "income") return false;
+        if (type === "expense" && t.kind !== "expense") return false;
+        if (type === "transfers" && t.kind !== "transfer_in" && t.kind !== "transfer_out") return false;
+        if (category && t.category !== category) return false;
+        if (!isNaN(min) && t.amount < min) return false;
+        if (!isNaN(max) && t.amount > max) return false;
+        if (q) {
+          const hay = `${t.description ?? ""} ${t.category ?? ""} ${t.account_name}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      }),
+    [txs, personId, accountPerson, range.from, range.to, type, category, min, max, q]
+  );
+
+  const totals = useMemo(() => {
+    let income = 0;
+    let expense = 0;
+    for (const t of filtered) {
+      if (t.kind === "income") income += t.amount;
+      else if (t.kind === "expense") expense += t.amount;
+    }
+    return { income, expense, net: income - expense };
+  }, [filtered]);
+
+  const ctl = "ctl !py-1 !w-auto text-[12.5px]";
+
   return (
-    <div className="max-w-[760px]">
+    <div className="max-w-[860px]">
       <div className="flex items-center gap-2 mb-3">
-        <select
-          className="ctl !w-56"
-          value={filter ?? ""}
-          onChange={(e) => setFilter(e.target.value ? Number(e.target.value) : null)}
-        >
-          <option value="">All accounts</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </select>
+        <div className="text-[13px] uppercase tracking-wide text-mut font-semibold">Transactions</div>
         <div className="flex-1" />
         <button className="btn-edge !p-1.5" title="Manage categories" onClick={() => setManagingCategories(true)}>
           <ListTree size={15} />
@@ -871,13 +954,78 @@ function Transactions({
         </button>
       </div>
 
+      <FilterBar active={filtersActive} onClear={clearFilters}>
+        <select className={ctl} value={account ?? ""} onChange={(e) => setAccount(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">All accounts</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <select className={ctl} value={personId ?? ""} onChange={(e) => setPersonId(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Everyone</option>
+          {people.map((p) => (
+            <option key={p.id} value={p.id}>
+              {personLabel(p)}
+            </option>
+          ))}
+        </select>
+        <select className={ctl} value={preset} onChange={(e) => setPreset(e.target.value as DatePreset)}>
+          {DATE_PRESETS.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+        {preset === "custom" && (
+          <>
+            <input type="date" className={ctl} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <span className="text-mut text-[12px]">to</span>
+            <input type="date" className={ctl} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+          </>
+        )}
+        <select className={ctl} value={type} onChange={(e) => setType(e.target.value as TxType)}>
+          <option value="all">All types</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+          <option value="transfers">Transfers</option>
+        </select>
+        <select className={ctl} value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">All categories</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <input type="number" className={`${ctl} !w-24`} placeholder="Min ₹" value={minAmt} onChange={(e) => setMinAmt(e.target.value)} />
+        <input type="number" className={`${ctl} !w-24`} placeholder="Max ₹" value={maxAmt} onChange={(e) => setMaxAmt(e.target.value)} />
+        <input className={`${ctl} !w-40`} placeholder="Search description…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </FilterBar>
+
+      {accounts.length > 0 && txs.length > 0 && (
+        <div className="flex items-center gap-4 mb-2 px-1 text-[12.5px]">
+          <span className="text-mut">
+            {filtered.length} of {txs.length} shown
+          </span>
+          <span className="text-ok">+{fmtMoney(totals.income, currency)} in</span>
+          <span className="text-bad">−{fmtMoney(totals.expense, currency)} out</span>
+          <span className={totals.net >= 0 ? "text-ok" : "text-bad"}>
+            net {fmtMoney(totals.net, currency)}
+          </span>
+        </div>
+      )}
+
       {accounts.length === 0 ? (
         <Empty text="Add an account first" hint="Transactions are recorded against an account." />
       ) : txs.length === 0 ? (
         <Empty text="No transactions yet" />
+      ) : filtered.length === 0 ? (
+        <Empty text="No transactions match these filters" hint="Try widening the date range or clearing filters." />
       ) : (
         <div className="card divide-y divide-edge">
-          {txs.map((t) => (
+          {filtered.map((t) => (
             <div key={t.id} className="px-4 py-2.5 flex items-center gap-3 group">
               <div className="w-20 shrink-0 text-mut text-[12px]">{fmtDate(t.date)}</div>
               <div className="flex-1 min-w-0">

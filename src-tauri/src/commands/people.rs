@@ -212,6 +212,7 @@ pub fn related_counts(conn: &Connection, id: i64) -> Result<HashMap<String, i64>
         ("tasks", "SELECT COUNT(*) FROM tasks WHERE person_id = ?1"),
         ("subscriptions", "SELECT COUNT(*) FROM subscriptions WHERE person_id = ?1"),
         ("investments", "SELECT COUNT(*) FROM investments WHERE person_id = ?1"),
+        ("holdings", "SELECT COUNT(*) FROM holdings WHERE person_id = ?1"),
         (
             "reminders",
             "SELECT COUNT(*) FROM timeline_events WHERE person_id = ?1 AND source_module = 'reminder'",
@@ -276,6 +277,7 @@ pub fn person_delete(
                 "tasks",
                 "subscriptions",
                 "investments",
+                "holdings",
                 "timeline_events",
             ] {
                 tx.execute(
@@ -324,6 +326,7 @@ pub fn person_overview(state: State<'_, AppState>, id: i64) -> Result<PersonOver
             notes: super::notes::note_metas_for(conn, Some(id))?,
             subscriptions: super::finance::subscriptions_for(conn, Some(id))?,
             investments: super::investments::investments_for(conn, Some(id))?,
+            holdings: super::portfolio::holdings_for(conn, Some(id))?,
             tasks: super::tasks::tasks_for(conn, Some(id))?,
             timeline: super::tasks::query_timeline_for(conn, 365, Some(id))?,
             person,

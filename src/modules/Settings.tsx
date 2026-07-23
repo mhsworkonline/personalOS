@@ -16,8 +16,12 @@ import {
   UploadCloud,
 } from "lucide-react";
 
+// Workbench is hidden for now (see CLAUDE.md "Hidden modules"). Flip to true to
+// bring back its Settings surfaces (start-on-Workbench toggle, AI Providers
+// preview); its Ctrl+K shortcut and nav item also need restoring in App.tsx.
+const SHOW_WORKBENCH = false;
+
 const SHORTCUTS: [string, string][] = [
-  ["Ctrl + K", "Open Workbench"],
   ["Ctrl + Space", "Universal Search"],
   ["Ctrl + Shift + Space", "Quick Capture"],
   ["Ctrl + N", "New note"],
@@ -99,21 +103,23 @@ export default function Settings({
               />
             </Field>
           </div>
-          <label className="flex items-center gap-2 text-[13px] mt-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={startOnWorkbench}
-              onChange={(e) => {
-                setStartOnWorkbench(e.target.checked);
-                setSetting("start_on_workbench", e.target.checked ? "1" : "0");
-              }}
-            />
-            Start PersonalOS on Workbench
-          </label>
+          {SHOW_WORKBENCH && (
+            <label className="flex items-center gap-2 text-[13px] mt-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={startOnWorkbench}
+                onChange={(e) => {
+                  setStartOnWorkbench(e.target.checked);
+                  setSetting("start_on_workbench", e.target.checked ? "1" : "0");
+                }}
+              />
+              Start PersonalOS on Workbench
+            </label>
+          )}
         </section>
 
-        {/* AI Providers */}
-        <ProvidersSection />
+        {/* AI Providers (Workbench preview) */}
+        {SHOW_WORKBENCH && <ProvidersSection />}
 
         {/* Security */}
         <section className="card p-4">

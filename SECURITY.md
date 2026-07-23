@@ -124,6 +124,21 @@ Two further consequences worth knowing:
 Embedded attachments (the `document_files` BLOBs described above) are
 unaffected and keep their full at-rest encryption.
 
+## Live price fetch (the one network call)
+
+The app is offline by default and makes **no** network calls on its own. The
+single exception is **user-initiated**: pressing "Fetch live" on the Portfolio
+price screen looks up current prices. Only the **quote key** of each holding
+leaves the machine — a stock symbol (e.g. `RELIANCE.NS`) or an AMFI scheme
+code. No personal data, holdings quantities, names, or anything from the vault
+is ever sent, and there is no login or account with the provider.
+
+- Stocks are looked up via Yahoo Finance, mutual-fund NAVs via the free
+  `mfapi.in` (AMFI data). Both are unauthenticated and can be unavailable; a
+  failed fetch just leaves you to type the price in manually.
+- The fetch runs in the Rust backend over HTTPS (rustls), not from the webview,
+  and happens only on that explicit click — never in the background.
+
 ## Bank account credentials
 
 Bank details (branch, IFSC, CIF, net-banking login/password, MPIN, app PIN,
