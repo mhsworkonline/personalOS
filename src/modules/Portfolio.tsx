@@ -10,10 +10,12 @@ const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 
 export default function Portfolio({
   refreshKey,
+  focus,
   currency,
   onChanged,
 }: {
   refreshKey: number;
+  focus?: { module: string; id: number; nonce: number } | null;
   currency: string;
   onChanged: () => void;
 }) {
@@ -30,6 +32,13 @@ export default function Portfolio({
     api.personList().then(setPeople).catch(() => {});
   }, []);
   useEffect(load, [load, refreshKey]);
+
+  // Arriving from a search result: open that holding directly.
+  useEffect(() => {
+    if (!focus || focus.module !== "holdings" || focus.id <= 0) return;
+    const h = holdings.find((x) => x.id === focus.id);
+    if (h) setEditing(h);
+  }, [focus, holdings]);
 
   const changed = () => {
     load();

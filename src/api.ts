@@ -401,6 +401,45 @@ export interface QuoteResult {
   error: string | null;
 }
 
+export type FeedKind = "news" | "youtube";
+
+export interface FeedSource {
+  id: number;
+  name: string;
+  kind: FeedKind;
+  topic: string;
+  url: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface CatalogEntry {
+  name: string;
+  kind: FeedKind;
+  topic: string;
+  url: string;
+}
+
+export interface FeedItem {
+  id: number;
+  source_id: number;
+  source_name: string;
+  source_kind: FeedKind;
+  title: string;
+  link: string;
+  summary: string | null;
+  published_at: string | null;
+  read: boolean;
+  fetched_at: string;
+}
+
+export interface FeedRefreshResult {
+  source_id: number;
+  source_name: string;
+  new_items: number;
+  error: string | null;
+}
+
 export interface MonthlyFlow {
   month: string;
   income: number;
@@ -649,6 +688,21 @@ export const api = {
   holdingDelete: (id: number) => invoke<void>("holding_delete", { id }),
   quoteFetch: (items: { id: number; kind: HoldingKind; quote_key: string }[]) =>
     invoke<QuoteResult[]>("quote_fetch", { items }),
+
+  // AI feed
+  feedCatalog: () => invoke<CatalogEntry[]>("feed_catalog"),
+  feedSourceList: () => invoke<FeedSource[]>("feed_source_list"),
+  feedSourceAdd: (input: { name: string; kind: FeedKind; topic: string; url: string }) =>
+    invoke<FeedSource>("feed_source_add", { input }),
+  feedSourceSetEnabled: (id: number, enabled: boolean) =>
+    invoke<void>("feed_source_set_enabled", { id, enabled }),
+  feedSourceDelete: (id: number) => invoke<void>("feed_source_delete", { id }),
+  feedItemList: (source: number | null, topic: string | null, unreadOnly: boolean) =>
+    invoke<FeedItem[]>("feed_item_list", { source, topic, unreadOnly }),
+  feedItemMarkRead: (id: number, read: boolean) => invoke<void>("feed_item_mark_read", { id, read }),
+  feedMarkAllRead: () => invoke<void>("feed_mark_all_read"),
+  feedItemOpen: (id: number) => invoke<void>("feed_item_open", { id }),
+  feedRefresh: () => invoke<FeedRefreshResult[]>("feed_refresh"),
 
   // finance
   financeOverview: () => invoke<FinanceOverview>("finance_overview"),

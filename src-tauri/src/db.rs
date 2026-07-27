@@ -175,6 +175,31 @@ CREATE TABLE IF NOT EXISTS emis (
   updated_at TEXT NOT NULL
 );
 
+-- AI Feed: public content (news/YouTube), deliberately NOT person-scoped —
+-- nothing here is personal data. Fetched only on explicit user refresh.
+CREATE TABLE IF NOT EXISTS feed_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'news',
+  topic TEXT NOT NULL DEFAULT 'ai',
+  url TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feed_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL REFERENCES feed_sources(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  link TEXT NOT NULL,
+  summary TEXT,
+  published_at TEXT,
+  guid TEXT NOT NULL,
+  read INTEGER NOT NULL DEFAULT 0,
+  fetched_at TEXT NOT NULL,
+  UNIQUE(source_id, guid)
+);
+
 CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -562,6 +587,55 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| format!("Migration failed setting index_version: {e}"))?;
         changed = true;
+    }
+
+    // AI Feed: topic tag, added after the module first shipped (news/AI only).
+    if table_exists(conn, "feed_sources")? && !has_column(conn, "feed_sources", "topic")? {
+        conn.execute_batch("ALTER TABLE feed_sources ADD COLUMN topic TEXT NOT NULL DEFAULT 'ai';")
+            .map_err(|e| format!("Migration failed on feed_sources.topic: {e}"))?;
+        changed = true;
+    }
+
+    // AI Feed: seed a verified starter list on first run only (each URL was
+    // fetched and confirmed to return real items before shipping — a dead
+    // default would be a bad first launch). Never re-seeds afterwards, so
+    // deleting a default source is respected.
+    if table_exists(conn, "feed_sources")? {
+        let existing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM feed_sources", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if existing == 0 {
+            let now = now();
+            const DEFAULTS: [(&str, &str, &str); 7] = [
+                ("OpenAI News", "news", "https://openai.com/news/rss.xml"),
+                ("Google DeepMind Blog", "news", "https://deepmind.google/blog/rss.xml"),
+                ("ArXiv — cs.AI (latest papers)", "news", "https://rss.arxiv.org/rss/cs.AI"),
+                ("Hacker News — AI", "news", "https://hnrss.org/newest?q=AI"),
+                (
+                    "Two Minute Papers",
+                    "youtube",
+                    "https://www.youtube.com/feeds/videos.xml?channel_id=UCbfYPyITQ-7l4upoX8nvctg",
+                ),
+                (
+                    "AI Explained",
+                    "youtube",
+                    "https://www.youtube.com/feeds/videos.xml?channel_id=UCNJ1Ymd5yFuUPtn21xtRbbw",
+                ),
+                (
+                    "Yannic Kilcher",
+                    "youtube",
+                    "https://www.youtube.com/feeds/videos.xml?channel_id=UCZHmQk67mSJgfCCTn7xBfew",
+                ),
+            ];
+            for (name, kind, url) in DEFAULTS {
+                conn.execute(
+                    "INSERT INTO feed_sources (name, kind, topic, url, created_at) VALUES (?1, ?2, 'ai', ?3, ?4)",
+                    params![name, kind, url, now],
+                )
+                .map_err(|e| format!("Seeding feed_sources failed: {e}"))?;
+            }
+            changed = true;
+        }
     }
 
     // The default person "Me" always exists.

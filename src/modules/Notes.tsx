@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { api, Folder, Note, NoteMeta, Person } from "../api";
-import { Confirm, Empty, Field, Modal, personLabel, useToast } from "../components/ui";
+import { Confirm, Empty, Field, Modal, personLabel, useCopy, useToast } from "../components/ui";
 import { fmtDate, todayISO } from "../lib/format";
 import {
   BellPlus,
+  Copy,
   Eye,
   FolderPlus,
   Folder as FolderIcon,
@@ -315,6 +316,7 @@ function NoteEditor({
   const [imageIds, setImageIds] = useState<number[]>([]);
   const [zoom, setZoom] = useState<string | null>(null);
   const toast = useToast();
+  const copy = useCopy();
   const saveTimer = useRef<number | undefined>(undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -486,6 +488,13 @@ function NoteEditor({
           onClick={() => setPreview(!preview)}
         >
           {preview ? <Pencil size={16} /> : <Eye size={16} />}
+        </button>
+        <button
+          className="btn-ghost !p-1.5"
+          title="Copy note text"
+          onClick={() => copy(content, "Note copied")}
+        >
+          <Copy size={16} />
         </button>
         <button className="btn-ghost !p-1.5 text-bad" title="Delete note" onClick={onDelete}>
           <Trash2 size={16} />

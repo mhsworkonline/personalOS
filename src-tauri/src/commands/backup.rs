@@ -18,7 +18,7 @@ use tauri::State;
 /// Insert order respects foreign keys; deletes run in reverse.
 /// `persons` first — nearly everything references it; `investments` before
 /// `documents` since a document may reference its property.
-const TABLES: [&str; 25] = [
+const TABLES: [&str; 26] = [
     "settings",
     "persons",
     "investments",
@@ -42,6 +42,7 @@ const TABLES: [&str; 25] = [
     "document_files",
     "document_links",
     "document_folder_map",
+    "feed_sources",
     "timeline_events",
     "activity_log",
 ];

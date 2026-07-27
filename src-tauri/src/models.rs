@@ -222,6 +222,63 @@ pub struct PortfolioSummary {
     pub count: i64,
 }
 
+// ---------------------------------------------------------------------------
+// AI Feed (public content — news/YouTube via RSS/Atom, refreshed on demand)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FeedSource {
+    pub id: i64,
+    pub name: String,
+    pub kind: String, // "news" | "youtube"
+    pub topic: String,
+    pub url: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FeedSourceInput {
+    pub name: String,
+    pub kind: String,
+    pub topic: String,
+    pub url: String,
+}
+
+/// One entry in the built-in curated catalog (verified free RSS/Atom sources,
+/// grouped by topic) offered in the "Discover" list for one-click add.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CatalogEntry {
+    pub name: String,
+    pub kind: String,
+    pub topic: String,
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FeedItem {
+    pub id: i64,
+    pub source_id: i64,
+    pub source_name: String,
+    pub source_kind: String,
+    pub title: String,
+    pub link: String,
+    pub summary: Option<String>,
+    pub published_at: Option<String>,
+    pub read: bool,
+    pub fetched_at: String,
+}
+
+/// Outcome of refreshing one source, so the UI can show per-source status
+/// rather than a single opaque pass/fail.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FeedRefreshResult {
+    pub source_id: i64,
+    pub source_name: String,
+    pub new_items: i64,
+    pub error: Option<String>,
+}
+
 /// One holding to look up a live price for.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct QuoteRequest {

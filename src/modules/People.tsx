@@ -116,6 +116,7 @@ export default function People({
   const [overview, setOverview] = useState<PersonOverview | null>(null);
   const [editing, setEditing] = useState<Person | "new" | null>(null);
   const [deleting, setDeleting] = useState<Person | null>(null);
+  const [focusDocId, setFocusDocId] = useState<number | null>(null);
   const toast = useToast();
 
   const loadPeople = useCallback(async () => {
@@ -147,7 +148,10 @@ export default function People({
     } else if (focus.module === "documents") {
       api.documentList(null).then((docs) => {
         const d = docs.find((x) => x.id === focus.id);
-        if (d) setSelectedId(d.person_id);
+        if (d) {
+          setSelectedId(d.person_id);
+          setFocusDocId(d.id);
+        }
       });
     }
   }, [focus]);
@@ -193,6 +197,8 @@ export default function People({
             onEdit={() => setEditing(overview.person)}
             onDelete={() => setDeleting(overview.person)}
             onChanged={onChanged}
+            focusDocId={focusDocId}
+            onFocusedDoc={() => setFocusDocId(null)}
           />
         ) : (
           <div className="h-full flex items-center justify-center text-mut text-sm">
@@ -241,6 +247,8 @@ function PersonDashboard({
   onEdit,
   onDelete,
   onChanged,
+  focusDocId,
+  onFocusedDoc,
 }: {
   overview: PersonOverview;
   people: Person[];
@@ -249,12 +257,37 @@ function PersonDashboard({
   onEdit: () => void;
   onDelete: () => void;
   onChanged: () => void;
+  focusDocId?: number | null;
+  onFocusedDoc?: () => void;
 }) {
   const p = overview.person;
   const toast = useToast();
   const [docEditing, setDocEditing] = useState<Doc | "new" | null>(null);
   const [docDeleting, setDocDeleting] = useState<Doc | null>(null);
   const [docFilter, setDocFilter] = useState("");
+
+  // Arriving from a search result: open the actual file, matching exactly
+  // what clicking that document's card does — a single linked file opens
+  // directly; several linked files opens the first (alphabetical, same order
+  // shown in the card) rather than guessing which one was meant; only when
+  // there's no linked file to open at all (embedded scans, or no file yet)
+  // does it fall back to the edit form, since that's the only place those
+  // are viewable. Only clears focusDocId once the document is actually
+  // found — a cross-person search hit briefly renders with the *previous*
+  // person's (non-empty) overview while the real one is still loading, so
+  // "not found yet" must not be treated as "never found".
+  useEffect(() => {
+    if (focusDocId == null) return;
+    const d = overview.documents.find((x) => x.id === focusDocId);
+    if (!d) return;
+    onFocusedDoc?.();
+    if (d.links.length > 0) {
+      api.documentLinkOpen(d.links[0].id).catch((e) => toast(String(e), "bad"));
+    } else {
+      setDocEditing(d);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusDocId, overview.documents]);
 
   // Matches the visible title, the type label and any linked filename, so
   // "gujcet" or "marksheet" narrows a long list straight away.

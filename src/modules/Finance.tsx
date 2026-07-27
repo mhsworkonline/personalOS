@@ -67,18 +67,40 @@ export default function Finance({
 }) {
   const [tab, setTab] = useState<Tab>("overview");
   const [people, setPeople] = useState<Person[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [focusAccountId, setFocusAccountId] = useState<number | null>(null);
+  const [focusTxId, setFocusTxId] = useState<number | null>(null);
+  const [focusSubId, setFocusSubId] = useState<number | null>(null);
+  const [focusEmiId, setFocusEmiId] = useState<number | null>(null);
 
   useEffect(() => {
     api.personList().then(setPeople).catch(() => {});
+    api.accountList().then(setAccounts).catch(() => {});
   }, [refreshKey]);
 
+  // Arriving from a search result: switch to the right tab AND open that
+  // specific record, instead of landing on a tab that lists everything.
   useEffect(() => {
     if (!focus) return;
-    if (focus.module === "subscriptions") setTab("subscriptions");
-    else if (focus.module === "emis") setTab("emis");
-    else if (focus.module === "accounts") setTab("accounts");
-    else if (focus.module === "transactions") setTab("transactions");
+    if (focus.module === "subscriptions") {
+      setTab("subscriptions");
+      if (focus.id > 0) setFocusSubId(focus.id);
+    } else if (focus.module === "emis") {
+      setTab("emis");
+      if (focus.id > 0) setFocusEmiId(focus.id);
+    } else if (focus.module === "accounts") {
+      setTab("accounts");
+      if (focus.id > 0) setFocusAccountId(focus.id);
+    } else if (focus.module === "transactions") {
+      setTab("transactions");
+      if (focus.id > 0) setFocusTxId(focus.id);
+    }
   }, [focus]);
+
+  const openAccount = (id: number) => {
+    setTab("accounts");
+    setFocusAccountId(id);
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -101,17 +123,48 @@ export default function Finance({
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        {tab === "overview" && <Overview refreshKey={refreshKey} currency={currency} />}
+        {tab === "overview" && (
+          <Overview refreshKey={refreshKey} currency={currency} accounts={accounts} onOpenAccount={openAccount} />
+        )}
         {tab === "accounts" && (
-          <Accounts refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
+          <Accounts
+            refreshKey={refreshKey}
+            people={people}
+            currency={currency}
+            onChanged={onChanged}
+            focusAccountId={focusAccountId}
+            onFocusedAccount={() => setFocusAccountId(null)}
+          />
         )}
         {tab === "transactions" && (
-          <Transactions refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
+          <Transactions
+            refreshKey={refreshKey}
+            people={people}
+            currency={currency}
+            onChanged={onChanged}
+            focusTxId={focusTxId}
+            onFocusedTx={() => setFocusTxId(null)}
+          />
         )}
         {tab === "subscriptions" && (
-          <Subscriptions refreshKey={refreshKey} people={people} currency={currency} onChanged={onChanged} />
+          <Subscriptions
+            refreshKey={refreshKey}
+            people={people}
+            currency={currency}
+            onChanged={onChanged}
+            focusSubId={focusSubId}
+            onFocusedSub={() => setFocusSubId(null)}
+          />
         )}
-        {tab === "emis" && <Emis refreshKey={refreshKey} currency={currency} onChanged={onChanged} />}
+        {tab === "emis" && (
+          <Emis
+            refreshKey={refreshKey}
+            currency={currency}
+            onChanged={onChanged}
+            focusEmiId={focusEmiId}
+            onFocusedEmi={() => setFocusEmiId(null)}
+          />
+        )}
       </div>
     </div>
   );
@@ -121,7 +174,17 @@ export default function Finance({
 // Overview
 // ---------------------------------------------------------------------------
 
-function Overview({ refreshKey, currency }: { refreshKey: number; currency: string }) {
+function Overview({
+  refreshKey,
+  currency,
+  accounts,
+  onOpenAccount,
+}: {
+  refreshKey: number;
+  currency: string;
+  accounts: Account[];
+  onOpenAccount: (id: number) => void;
+}) {
   const [data, setData] = useState<FinanceOverview | null>(null);
   useEffect(() => {
     api.financeOverview().then(setData).catch(() => {});
@@ -129,6 +192,7 @@ function Overview({ refreshKey, currency }: { refreshKey: number; currency: stri
 
   if (!data) return null;
   const cashOnHand = data.by_kind.find((k) => k.kind === "cash")?.total ?? 0;
+  const cashAccounts = accounts.filter((a) => a.kind === "cash");
 
   return (
     <div className="max-w-[860px]">
@@ -147,10 +211,14 @@ function Overview({ refreshKey, currency }: { refreshKey: number; currency: stri
           <div className="text-mut text-[12px] mb-1">Liabilities</div>
           <div className="text-2xl font-semibold text-bad">{fmtMoney(data.liabilities, currency)}</div>
         </div>
-        <div className="card p-4">
+        <div
+          className={`card p-4 ${cashAccounts.length > 0 ? "cursor-pointer hover:border-acc/40" : ""}`}
+          onClick={() => cashAccounts.length > 0 && onOpenAccount(cashAccounts[0].id)}
+          title={cashAccounts.length > 0 ? "Open " + cashAccounts[0].name : undefined}
+        >
           <div className="text-mut text-[12px] mb-1">Cash on hand</div>
           <div className="text-2xl font-semibold">{fmtMoney(cashOnHand, currency)}</div>
-          {!data.by_kind.some((k) => k.kind === "cash") && (
+          {cashAccounts.length === 0 && (
             <div className="text-mut text-[11px] mt-1">Add a Cash account under Accounts to track this.</div>
           )}
         </div>
@@ -214,11 +282,15 @@ function Accounts({
   people,
   currency,
   onChanged,
+  focusAccountId,
+  onFocusedAccount,
 }: {
   refreshKey: number;
   people: Person[];
   currency: string;
   onChanged: () => void;
+  focusAccountId?: number | null;
+  onFocusedAccount?: () => void;
 }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [editing, setEditing] = useState<Account | "new" | null>(null);
@@ -229,6 +301,14 @@ function Accounts({
     api.accountList().then(setAccounts).catch(() => {});
   }, []);
   useEffect(load, [load, refreshKey]);
+
+  useEffect(() => {
+    if (focusAccountId != null) {
+      setOpenId(focusAccountId);
+      onFocusedAccount?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusAccountId]);
 
   return (
     <div className="max-w-[760px]">
@@ -836,17 +916,36 @@ function Transactions({
   people,
   currency,
   onChanged,
+  focusTxId,
+  onFocusedTx,
 }: {
   refreshKey: number;
   people: Person[];
   currency: string;
   onChanged: () => void;
+  focusTxId?: number | null;
+  onFocusedTx?: () => void;
 }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<TransactionCategory[]>([]);
   const [txs, setTxs] = useState<Transaction[]>([]);
   const [adding, setAdding] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+
+  // Arriving from a search result: open that transaction directly. Waits for
+  // the (async) transaction list to actually load before giving up, so it
+  // doesn't clear itself on the empty initial render.
+  useEffect(() => {
+    if (focusTxId == null) return;
+    const t = txs.find((x) => x.id === focusTxId);
+    if (t) {
+      setEditingTx(t);
+      onFocusedTx?.();
+    } else if (txs.length > 0) {
+      onFocusedTx?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTxId, txs]);
   const [transferring, setTransferring] = useState(false);
   const [managingCategories, setManagingCategories] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Transaction | null>(null);
@@ -1524,11 +1623,15 @@ function Subscriptions({
   people,
   currency,
   onChanged,
+  focusSubId,
+  onFocusedSub,
 }: {
   refreshKey: number;
   people: Person[];
   currency: string;
   onChanged: () => void;
+  focusSubId?: number | null;
+  onFocusedSub?: () => void;
 }) {
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [editing, setEditing] = useState<Subscription | "new" | null>(null);
@@ -1538,6 +1641,19 @@ function Subscriptions({
   useEffect(() => {
     api.subscriptionList().then(setSubs).catch(() => {});
   }, [refreshKey]);
+
+  // Arriving from a search result: open that subscription directly.
+  useEffect(() => {
+    if (focusSubId == null) return;
+    const s = subs.find((x) => x.id === focusSubId);
+    if (s) {
+      setEditing(s);
+      onFocusedSub?.();
+    } else if (subs.length > 0) {
+      onFocusedSub?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSubId, subs]);
 
   return (
     <div className="max-w-[760px]">
@@ -1738,10 +1854,14 @@ function Emis({
   refreshKey,
   currency,
   onChanged,
+  focusEmiId,
+  onFocusedEmi,
 }: {
   refreshKey: number;
   currency: string;
   onChanged: () => void;
+  focusEmiId?: number | null;
+  onFocusedEmi?: () => void;
 }) {
   const [emis, setEmis] = useState<Emi[]>([]);
   const [investments, setInvestments] = useState<InvestmentSummary[]>([]);
@@ -1755,6 +1875,19 @@ function Emis({
     api.investmentList().then(setInvestments).catch(() => {});
     api.accountList().then(setAccounts).catch(() => {});
   }, [refreshKey]);
+
+  // Arriving from a search result: open that EMI directly.
+  useEffect(() => {
+    if (focusEmiId == null) return;
+    const e = emis.find((x) => x.id === focusEmiId);
+    if (e) {
+      setEditing(e);
+      onFocusedEmi?.();
+    } else if (emis.length > 0) {
+      onFocusedEmi?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEmiId, emis]);
 
   const investmentName = (id: number | null) => (id == null ? null : investments.find((i) => i.id === id)?.name);
 

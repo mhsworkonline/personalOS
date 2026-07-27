@@ -139,6 +139,19 @@ is ever sent, and there is no login or account with the provider.
 - The fetch runs in the Rust backend over HTTPS (rustls), not from the webview,
   and happens only on that explicit click — never in the background.
 
+## AI Feed (the second network exception)
+
+The AI Feed module reads public content (news/YouTube) from RSS/Atom sources
+the user configures. Like the live price fetch above, this is **entirely
+user-initiated**: nothing is fetched until the user presses "Refresh," and it
+never runs on a timer or on app launch. Only the feed URL is requested — no
+personal data ever accompanies the request, and there is no login or account.
+
+This module is also the one deliberate exception to the person-centric rule
+in CLAUDE.md: feed sources and cached items carry no `person_id` because the
+content isn't personal data — it's public and shared, closer to a bookmark
+list than a record about the user.
+
 ## Bank account credentials
 
 Bank details (branch, IFSC, CIF, net-banking login/password, MPIN, app PIN,

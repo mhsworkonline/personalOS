@@ -24,6 +24,8 @@ hex = "0.4"
 # On-demand live quote fetch (user-initiated only). Synchronous + rustls, so
 # no tokio/OpenSSL; the only network calls the app ever makes.
 ureq = { version = "2", features = ["json"] }
+# AI Feed: parses RSS/Atom from user-configured sources (on-demand refresh only).
+feed-rs = "2"
 tauri-plugin-opener = "2.5.4"
 sha2 = "0.11.0"
 walkdir = "2.5.0"

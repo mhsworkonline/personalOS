@@ -13,6 +13,7 @@ import QuickCapture from "./modules/QuickCapture";
 import People from "./modules/People";
 import DocumentLibrary from "./modules/DocumentLibrary";
 import Portfolio from "./modules/Portfolio";
+import AiFeed from "./modules/AiFeed";
 // Workbench is hidden for now (UI-only mock, no backend) — see CLAUDE.md
 // "Hidden modules". Its files remain under src/modules/workbench/ so it can be
 // revived by restoring the import, nav item, route and Ctrl+K shortcut below.
@@ -29,6 +30,7 @@ import {
   Home,
   FolderOpen,
   TrendingUp,
+  Newspaper,
 } from "lucide-react";
 
 export type View =
@@ -39,6 +41,7 @@ export type View =
   | "vault"
   | "finance"
   | "portfolio"
+  | "aifeed"
   | "investments"
   | "notes"
   | "settings";
@@ -195,6 +198,7 @@ export default function App() {
     { view: "vault", label: "Vault", icon: <KeyRound size={17} />, kbd: "Ctrl+Shift+V" },
     { view: "finance", label: "Finance", icon: <Wallet size={17} /> },
     { view: "portfolio", label: "Portfolio", icon: <TrendingUp size={17} /> },
+    { view: "aifeed", label: "AI Feed", icon: <Newspaper size={17} /> },
     { view: "investments", label: "Investments", icon: <Home size={17} /> },
     { view: "notes", label: "Notes", icon: <StickyNote size={17} />, kbd: "Ctrl+N" },
   ];
@@ -293,8 +297,9 @@ export default function App() {
             <Finance refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
           )}
           {view === "portfolio" && (
-            <Portfolio refreshKey={refreshKey} currency={currency} onChanged={dataChanged} />
+            <Portfolio refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
           )}
+          {view === "aifeed" && <AiFeed refreshKey={refreshKey} onChanged={dataChanged} />}
           {view === "investments" && (
             <Investments refreshKey={refreshKey} focus={focus} currency={currency} onChanged={dataChanged} />
           )}

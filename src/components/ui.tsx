@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { X } from "lucide-react";
 
@@ -75,11 +75,35 @@ export function Modal({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      // Nearest enclosing modal card for the key's target — order-independent
+      // even with nested modals, since closest() always finds the innermost
+      // match regardless of listener registration order.
+      const nearest = target.closest?.(".pop-in");
+      if (nearest !== cardRef.current) return;
+
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+        return;
+      }
+      if (
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        target.tagName !== "TEXTAREA" &&
+        target.tagName !== "BUTTON" &&
+        target.tagName !== "SELECT"
+      ) {
+        const btn = cardRef.current?.querySelector<HTMLButtonElement>(".btn-acc:not(:disabled)");
+        if (btn) {
+          e.preventDefault();
+          e.stopPropagation();
+          btn.click();
+        }
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -94,6 +118,7 @@ export function Modal({
       }}
     >
       <div
+        ref={cardRef}
         className={`pop-in card shadow-2xl flex flex-col max-h-[74vh] ${
           wide ? "w-[680px]" : "w-[520px]"
         } max-w-[92vw]`}
