@@ -638,6 +638,28 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         }
     }
 
+    // Fix-up: rent_due timeline rows used to key source_id on the
+    // rent-schedule row id instead of the investment id, so clicking one on
+    // the dashboard could open the wrong (or a coincidentally id-matching)
+    // property. Repoint any row that still resolves as a live schedule id.
+    // Idempotent: once fixed, source_id holds an investment id, which won't
+    // usually also resolve as a schedule id, so the UPDATE matches nothing
+    // on later runs.
+    if table_exists(conn, "investment_rent_schedules")? && table_exists(conn, "timeline_events")? {
+        let n = conn
+            .execute(
+                "UPDATE timeline_events
+                 SET source_id = (SELECT investment_id FROM investment_rent_schedules WHERE id = timeline_events.source_id)
+                 WHERE source_module = 'investments' AND kind = 'rent_due'
+                   AND source_id IN (SELECT id FROM investment_rent_schedules)",
+                [],
+            )
+            .map_err(|e| format!("Migration failed fixing rent_due timeline source_id: {e}"))?;
+        if n > 0 {
+            changed = true;
+        }
+    }
+
     // The default person "Me" always exists.
     let me = ensure_default_person(conn)?;
 

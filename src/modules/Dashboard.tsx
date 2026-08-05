@@ -1,8 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, DashboardData, FinanceCharts, Person, TimelineEvent } from "../api";
+import {
+  Account,
+  Activity,
+  api,
+  DashboardData,
+  Emi,
+  FinanceCharts,
+  InvestmentSummary,
+  Person,
+  Subscription,
+  TimelineEvent,
+  Transaction,
+  TransactionCategory,
+} from "../api";
 import { NavTarget } from "../App";
 import { Confirm, Empty, Field, Modal, personLabel, Tone, useToast } from "../components/ui";
 import { MonthlyFlowChart, RankedBarChart } from "../components/charts";
+import { AccountDetailModal, AccountEditor, EmiEditor, SubscriptionEditor, TransactionEditor } from "./Finance";
+import { InvestmentDetailModal } from "./Investments";
 import { dueLabel, fmtDate, fmtDateTime, fmtMoney, todayISO } from "../lib/format";
 import {
   BellPlus,
@@ -37,10 +52,63 @@ function eventTarget(ev: TimelineEvent): NavTarget {
       return { view: "finance", recordModule: ev.source_module, recordId: ev.source_id ?? undefined };
     case "notes":
       return { view: "notes", recordModule: "notes", recordId: ev.source_id ?? undefined };
+    case "investments":
+      return { view: "investments", recordModule: "investments", recordId: ev.source_id ?? undefined };
     default:
       return { view: "dashboard" };
   }
 }
+
+/** Where a "Recent activity" row leads, if anywhere — most entries recorded
+ *  for deletions carry no record_id (the record is gone), so those stay
+ *  inert. Modules with more than one record type (finance) key off the
+ *  action text since the activity log doesn't carry a finer module name. */
+function activityTarget(a: Activity): NavTarget | null {
+  if (a.record_id == null) return null;
+  switch (a.module) {
+    case "finance":
+      if (a.action === "transfer") return { view: "finance", recordModule: "transactions", recordId: a.record_id };
+      if (a.action === "renewed") return { view: "finance", recordModule: "subscriptions", recordId: a.record_id };
+      return { view: "finance" };
+    case "investments":
+      if (a.action === "ended tenancy") return { view: "investments", recordModule: "investments", recordId: a.record_id };
+      return { view: "investments" };
+    case "documents":
+      return { view: "people", recordModule: "documents", recordId: a.record_id };
+    case "notes":
+      return { view: "notes", recordModule: "notes", recordId: a.record_id };
+    case "vault":
+      return { view: "vault", recordModule: "vault", recordId: a.record_id };
+    case "people":
+      return { view: "people", recordModule: "person", recordId: a.record_id };
+    case "portfolio":
+      return { view: "portfolio", recordModule: "holdings", recordId: a.record_id };
+    default:
+      // tasks, timeline (reminders): no page of their own beyond this dashboard.
+      return null;
+  }
+}
+
+/** Record types that open as a self-contained popup elsewhere in the app —
+ *  for these, a Timeline/Activity click should just pop that popup open on
+ *  top of the dashboard, not switch to the owning module's tab. Record
+ *  types that only exist as a full-page master/detail view (notes, vault,
+ *  documents, people, portfolio holdings) still navigate there, since
+ *  there's no separate popup to show in isolation. */
+type QuickView =
+  | { kind: "account"; id: number }
+  | { kind: "transaction"; id: number }
+  | { kind: "subscription"; id: number }
+  | { kind: "emi"; id: number }
+  | { kind: "investment"; id: number };
+
+const QUICK_VIEW_KIND: Record<string, QuickView["kind"]> = {
+  accounts: "account",
+  transactions: "transaction",
+  subscriptions: "subscription",
+  emis: "emi",
+  investments: "investment",
+};
 
 export default function Dashboard({
   refreshKey,
@@ -63,6 +131,55 @@ export default function Dashboard({
   const [reminderOpen, setReminderOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ kind: "task" | "quick" | "event"; id: number } | null>(null);
   const toast = useToast();
+
+  // Quick view: pops a record's own popup open right here on the dashboard,
+  // without switching views — see the QuickView type above.
+  const [quickView, setQuickView] = useState<QuickView | null>(null);
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [qvAccounts, setQvAccounts] = useState<Account[]>([]);
+  const [qvCategories, setQvCategories] = useState<TransactionCategory[]>([]);
+  const [qvInvestments, setQvInvestments] = useState<InvestmentSummary[]>([]);
+  const [qvTransaction, setQvTransaction] = useState<Transaction | null>(null);
+  const [qvSubscription, setQvSubscription] = useState<Subscription | null>(null);
+  const [qvEmi, setQvEmi] = useState<Emi | null>(null);
+
+  const loadQuickView = useCallback((qv: QuickView) => {
+    api.accountList().then(setQvAccounts).catch(() => {});
+    if (qv.kind === "transaction") {
+      api.categoryList().then(setQvCategories).catch(() => {});
+      api
+        .transactionList(null, 1000)
+        .then((txs) => setQvTransaction(txs.find((t) => t.id === qv.id) ?? null))
+        .catch(() => {});
+    } else if (qv.kind === "subscription") {
+      api
+        .subscriptionList()
+        .then((subs) => setQvSubscription(subs.find((s) => s.id === qv.id) ?? null))
+        .catch(() => {});
+    } else if (qv.kind === "emi") {
+      api.investmentList().then(setQvInvestments).catch(() => {});
+      api
+        .emiList()
+        .then((emis) => setQvEmi(emis.find((e) => e.id === qv.id) ?? null))
+        .catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (quickView) loadQuickView(quickView);
+  }, [quickView, loadQuickView]);
+
+  // Timeline/Activity rows: open the record's own popup in place when it has
+  // one, otherwise fall back to actually navigating there (notes, vault,
+  // documents, people, portfolio holdings — full pages, not popups).
+  const openRecord = (t: NavTarget) => {
+    const kind = t.recordModule && QUICK_VIEW_KIND[t.recordModule];
+    if (kind && t.recordId != null) {
+      setQuickView({ kind, id: t.recordId } as QuickView);
+      return;
+    }
+    navigate(t);
+  };
 
   const load = useCallback(() => {
     api.getDashboard(30).then(setData).catch(() => {});
@@ -154,7 +271,7 @@ export default function Dashboard({
                     <li
                       key={ev.id}
                       className="group flex items-center gap-2.5 py-1.5 px-1.5 -mx-1.5 rounded-md hover:bg-panel2 cursor-pointer"
-                      onClick={() => navigate(eventTarget(ev))}
+                      onClick={() => openRecord(eventTarget(ev))}
                     >
                       {KIND_ICON[ev.kind] ?? KIND_ICON.reminder}
                       <span className="flex-1 truncate flex items-center gap-1.5 min-w-0">
@@ -299,15 +416,24 @@ export default function Dashboard({
             </h2>
             {data.activity.length === 0 && <Empty text="No activity yet" />}
             <ul>
-              {data.activity.map((a) => (
-                <li key={a.id} className="flex items-baseline gap-2 py-1 text-[13px]">
-                  <span className="text-mut w-24 shrink-0 text-[12px]">{fmtDateTime(a.created_at)}</span>
-                  <span className="text-mut">{a.module}</span>
-                  <span className="truncate">
-                    {a.action} · {a.title}
-                  </span>
-                </li>
-              ))}
+              {data.activity.map((a) => {
+                const target = activityTarget(a);
+                return (
+                  <li
+                    key={a.id}
+                    className={`flex items-baseline gap-2 py-1 px-1.5 -mx-1.5 rounded-md text-[13px] ${
+                      target ? "cursor-pointer hover:bg-panel2" : ""
+                    }`}
+                    onClick={() => target && openRecord(target)}
+                  >
+                    <span className="text-mut w-24 shrink-0 text-[12px]">{fmtDateTime(a.created_at)}</span>
+                    <span className="text-mut">{a.module}</span>
+                    <span className="truncate">
+                      {a.action} · {a.title}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>
@@ -367,6 +493,87 @@ export default function Dashboard({
             if (kind === "task") await api.taskDelete(id);
             else if (kind === "quick") await api.quickNoteDelete(id);
             else await api.timelineDelete(id);
+            onChanged();
+          }}
+        />
+      )}
+
+      {quickView?.kind === "account" && (
+        <AccountDetailModal
+          key={quickView.id}
+          accountId={quickView.id}
+          accounts={qvAccounts}
+          currency={currency}
+          onClose={() => setQuickView(null)}
+          onEdit={(a) => setEditingAccount(a)}
+          onChanged={() => {
+            loadQuickView(quickView);
+            onChanged();
+          }}
+        />
+      )}
+      {editingAccount && (
+        <AccountEditor
+          key={editingAccount.id}
+          account={editingAccount}
+          people={people}
+          onClose={() => setEditingAccount(null)}
+          onSaved={() => {
+            setEditingAccount(null);
+            if (quickView) loadQuickView(quickView);
+            onChanged();
+          }}
+        />
+      )}
+      {quickView?.kind === "transaction" && qvTransaction && (
+        <TransactionEditor
+          key={qvTransaction.id}
+          transaction={qvTransaction}
+          accounts={qvAccounts}
+          categories={qvCategories}
+          onAddCategory={() => api.categoryList().then(setQvCategories).catch(() => {})}
+          onClose={() => setQuickView(null)}
+          onSaved={() => {
+            setQuickView(null);
+            onChanged();
+          }}
+        />
+      )}
+      {quickView?.kind === "subscription" && qvSubscription && (
+        <SubscriptionEditor
+          key={qvSubscription.id}
+          sub={qvSubscription}
+          people={people}
+          onClose={() => setQuickView(null)}
+          onSaved={() => {
+            setQuickView(null);
+            onChanged();
+          }}
+        />
+      )}
+      {quickView?.kind === "emi" && qvEmi && (
+        <EmiEditor
+          key={qvEmi.id}
+          emi={qvEmi}
+          investments={qvInvestments}
+          accounts={qvAccounts}
+          onClose={() => setQuickView(null)}
+          onSaved={() => {
+            setQuickView(null);
+            onChanged();
+          }}
+        />
+      )}
+      {quickView?.kind === "investment" && (
+        <InvestmentDetailModal
+          key={quickView.id}
+          id={quickView.id}
+          people={people}
+          accounts={qvAccounts}
+          currency={currency}
+          onClose={() => setQuickView(null)}
+          onChanged={() => {
+            loadQuickView(quickView);
             onChanged();
           }}
         />

@@ -209,6 +209,7 @@ export default function People({
 
       {editing && (
         <PersonEditor
+          key={editing === "new" ? "new" : editing.id}
           person={editing === "new" ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={(p) => {
@@ -600,6 +601,7 @@ function PersonDashboard({
 
       {docEditing && (
         <DocumentEditor
+          key={docEditing === "new" ? "new" : docEditing.id}
           doc={docEditing === "new" ? null : docEditing}
           personId={p.id}
           people={people}

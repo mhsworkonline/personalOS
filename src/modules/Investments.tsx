@@ -257,6 +257,7 @@ export default function Investments({
 
       {editing && (
         <InvestmentEditor
+          key={editing === "new" ? "new" : editing.id}
           investment={editing === "new" ? null : editing}
           people={people}
           onClose={() => setEditing(null)}
@@ -281,6 +282,7 @@ export default function Investments({
       )}
       {openId != null && (
         <InvestmentDetailModal
+          key={openId}
           id={openId}
           people={people}
           accounts={accounts}
@@ -488,7 +490,7 @@ function InvestmentEditor({
 // Property detail: transactions + rent schedule
 // ---------------------------------------------------------------------------
 
-function InvestmentDetailModal({
+export function InvestmentDetailModal({
   id,
   people,
   accounts,
@@ -701,6 +703,7 @@ function InvestmentDetailModal({
 
       {(addingTx || editingTx) && (
         <TransactionAddModal
+          key={editingTx ? editingTx.id : "new"}
           transaction={editingTx}
           investmentId={id}
           accounts={accounts}
@@ -718,6 +721,7 @@ function InvestmentDetailModal({
       )}
       {rentEditing && (
         <RentEditor
+          key={rent?.id ?? "new"}
           investmentId={id}
           rent={rent}
           accounts={accounts}

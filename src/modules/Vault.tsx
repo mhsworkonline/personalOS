@@ -204,6 +204,7 @@ export default function Vault({
 
       {editing && (
         <ItemEditor
+          key={editing === "new" ? "new" : editing.id}
           item={editing === "new" ? null : editing}
           people={people}
           initialCategory={editing === "new" && category ? category : undefined}

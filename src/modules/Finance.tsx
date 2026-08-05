@@ -35,7 +35,7 @@ import {
   presetRange,
   todayISO,
 } from "../lib/format";
-import { ArrowLeftRight, Check, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeftRight, ArrowUpDown, Check, ListTree, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 type Tab = "overview" | "accounts" | "transactions" | "subscriptions" | "emis";
 
@@ -186,6 +186,7 @@ function Overview({
   onOpenAccount: (id: number) => void;
 }) {
   const [data, setData] = useState<FinanceOverview | null>(null);
+  const [breakdown, setBreakdown] = useState<"net_worth" | "assets" | "liabilities" | "cash" | null>(null);
   useEffect(() => {
     api.financeOverview().then(setData).catch(() => {});
   }, [refreshKey]);
@@ -193,28 +194,29 @@ function Overview({
   if (!data) return null;
   const cashOnHand = data.by_kind.find((k) => k.kind === "cash")?.total ?? 0;
   const cashAccounts = accounts.filter((a) => a.kind === "cash");
+  const assetAccounts = accounts.filter((a) => a.kind !== "credit_card");
+  const liabilityAccounts = accounts.filter((a) => a.kind === "credit_card");
 
   return (
     <div className="max-w-[860px]">
       <div className="grid grid-cols-4 gap-4 mb-4">
-        <div className="card p-4">
+        <div className="card p-4 cursor-pointer hover:border-acc/40" onClick={() => setBreakdown("net_worth")}>
           <div className="text-mut text-[12px] mb-1">Net worth</div>
           <div className={`text-2xl font-semibold ${data.net_worth < 0 ? "text-bad" : ""}`}>
             {fmtMoney(data.net_worth, currency)}
           </div>
         </div>
-        <div className="card p-4">
+        <div className="card p-4 cursor-pointer hover:border-acc/40" onClick={() => setBreakdown("assets")}>
           <div className="text-mut text-[12px] mb-1">Assets</div>
           <div className="text-2xl font-semibold text-ok">{fmtMoney(data.assets, currency)}</div>
         </div>
-        <div className="card p-4">
+        <div className="card p-4 cursor-pointer hover:border-acc/40" onClick={() => setBreakdown("liabilities")}>
           <div className="text-mut text-[12px] mb-1">Liabilities</div>
           <div className="text-2xl font-semibold text-bad">{fmtMoney(data.liabilities, currency)}</div>
         </div>
         <div
           className={`card p-4 ${cashAccounts.length > 0 ? "cursor-pointer hover:border-acc/40" : ""}`}
-          onClick={() => cashAccounts.length > 0 && onOpenAccount(cashAccounts[0].id)}
-          title={cashAccounts.length > 0 ? "Open " + cashAccounts[0].name : undefined}
+          onClick={() => cashAccounts.length > 0 && setBreakdown("cash")}
         >
           <div className="text-mut text-[12px] mb-1">Cash on hand</div>
           <div className="text-2xl font-semibold">{fmtMoney(cashOnHand, currency)}</div>
@@ -223,6 +225,22 @@ function Overview({
           )}
         </div>
       </div>
+
+      {breakdown && (
+        <OverviewBreakdownModal
+          kind={breakdown}
+          data={data}
+          currency={currency}
+          assetAccounts={assetAccounts}
+          liabilityAccounts={liabilityAccounts}
+          cashAccounts={cashAccounts}
+          onClose={() => setBreakdown(null)}
+          onOpenAccount={(id) => {
+            setBreakdown(null);
+            onOpenAccount(id);
+          }}
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div className="card p-4">
@@ -273,6 +291,124 @@ function Overview({
   );
 }
 
+const BREAKDOWN_TITLE: Record<"net_worth" | "assets" | "liabilities" | "cash", string> = {
+  net_worth: "Net worth",
+  assets: "Assets",
+  liabilities: "Liabilities",
+  cash: "Cash on hand",
+};
+
+/** Row list behind one of the summary cards, opened from a click on that card.
+ *  Each account row opens the account's own detail popup. */
+function OverviewBreakdownModal({
+  kind,
+  data,
+  currency,
+  assetAccounts,
+  liabilityAccounts,
+  cashAccounts,
+  onClose,
+  onOpenAccount,
+}: {
+  kind: "net_worth" | "assets" | "liabilities" | "cash";
+  data: FinanceOverview;
+  currency: string;
+  assetAccounts: Account[];
+  liabilityAccounts: Account[];
+  cashAccounts: Account[];
+  onClose: () => void;
+  onOpenAccount: (id: number) => void;
+}) {
+  const Row = ({ label, sub, amount, tone, onClick }: { label: string; sub?: string; amount: number; tone?: "ok" | "bad"; onClick?: () => void }) => (
+    <div
+      className={`flex items-center justify-between py-2 px-1 border-b border-edge last:border-0 ${
+        onClick ? "cursor-pointer hover:bg-panel2 rounded" : ""
+      }`}
+      onClick={onClick}
+    >
+      <div className="min-w-0">
+        <div className="truncate">{label}</div>
+        {sub && <div className="text-mut text-[12px] truncate">{sub}</div>}
+      </div>
+      <div className={`font-medium shrink-0 ${tone === "bad" ? "text-bad" : tone === "ok" ? "text-ok" : ""}`}>
+        {fmtMoney(amount, currency)}
+      </div>
+    </div>
+  );
+
+  const assetRows = (
+    <>
+      {assetAccounts.map((a) => (
+        <Row
+          key={a.id}
+          label={a.name}
+          sub={KIND_LABEL[a.kind]}
+          amount={a.balance}
+          onClick={() => onOpenAccount(a.id)}
+        />
+      ))}
+      {data.portfolio_value > 0 && <Row label="Portfolio" sub="Stocks & funds" amount={data.portfolio_value} />}
+      {assetAccounts.length === 0 && data.portfolio_value <= 0 && <Empty text="No asset accounts yet" />}
+    </>
+  );
+
+  const liabilityRows = (
+    <>
+      {liabilityAccounts.map((a) => (
+        <Row key={a.id} label={a.name} sub={KIND_LABEL[a.kind]} amount={a.balance} tone="bad" onClick={() => onOpenAccount(a.id)} />
+      ))}
+      {liabilityAccounts.length === 0 && <Empty text="No liabilities" hint="No credit card balances owed." />}
+    </>
+  );
+
+  return (
+    <Modal title={BREAKDOWN_TITLE[kind]} onClose={onClose} wide>
+      {kind === "net_worth" && (
+        <>
+          <SectionTitle>Assets</SectionTitle>
+          {assetRows}
+          <SectionTitle>Liabilities</SectionTitle>
+          {liabilityRows}
+          <div className="flex justify-between pt-3 mt-2 border-t border-edge font-semibold">
+            <span>Net worth</span>
+            <span className={data.net_worth < 0 ? "text-bad" : ""}>{fmtMoney(data.net_worth, currency)}</span>
+          </div>
+        </>
+      )}
+      {kind === "assets" && (
+        <>
+          {assetRows}
+          <div className="flex justify-between pt-3 mt-2 border-t border-edge font-semibold">
+            <span>Total assets</span>
+            <span className="text-ok">{fmtMoney(data.assets, currency)}</span>
+          </div>
+        </>
+      )}
+      {kind === "liabilities" && (
+        <>
+          {liabilityRows}
+          <div className="flex justify-between pt-3 mt-2 border-t border-edge font-semibold">
+            <span>Total liabilities</span>
+            <span className="text-bad">{fmtMoney(data.liabilities, currency)}</span>
+          </div>
+        </>
+      )}
+      {kind === "cash" && (
+        <>
+          {cashAccounts.map((a) => (
+            <Row key={a.id} label={a.name} sub={a.notes ?? undefined} amount={a.balance} onClick={() => onOpenAccount(a.id)} />
+          ))}
+          {cashAccounts.length === 0 && <Empty text="No cash accounts yet" />}
+          <div className="flex justify-between pt-3 mt-2 border-t border-edge font-semibold">
+            <span>Total cash</span>
+            <span>{fmtMoney(cashAccounts.reduce((s, a) => s + a.balance, 0), currency)}</span>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Accounts
 // ---------------------------------------------------------------------------
@@ -297,6 +433,13 @@ function Accounts({
   const [confirmDelete, setConfirmDelete] = useState<Account | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
 
+  // Filters + sorting (view-only; reset on navigation).
+  const [search, setSearch] = useState("");
+  const [kindFilter, setKindFilter] = useState<AccountKind | "">("");
+  const [personFilter, setPersonFilter] = useState<number | null>(null);
+  const [sortBy, setSortBy] = useState<"name" | "balance" | "kind">("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
   const load = useCallback(() => {
     api.accountList().then(setAccounts).catch(() => {});
   }, []);
@@ -310,6 +453,42 @@ function Accounts({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusAccountId]);
 
+  const filtersActive = search.trim() !== "" || kindFilter !== "" || personFilter != null;
+  const clearFilters = () => {
+    setSearch("");
+    setKindFilter("");
+    setPersonFilter(null);
+  };
+
+  const q = search.trim().toLowerCase();
+  const filtered = useMemo(
+    () =>
+      accounts.filter((a) => {
+        if (kindFilter && a.kind !== kindFilter) return false;
+        if (personFilter != null && a.person_id !== personFilter) return false;
+        if (q) {
+          const hay = `${a.name} ${a.details.bank_name ?? ""} ${a.notes ?? ""}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      }),
+    [accounts, kindFilter, personFilter, q]
+  );
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === "name") cmp = a.name.localeCompare(b.name);
+      else if (sortBy === "balance") cmp = a.balance - b.balance;
+      else cmp = KIND_LABEL[a.kind].localeCompare(KIND_LABEL[b.kind]);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [filtered, sortBy, sortDir]);
+
+  const ctl = "ctl !py-1 !w-auto text-[12.5px]";
+
   return (
     <div className="max-w-[760px]">
       <div className="flex justify-end mb-3">
@@ -320,8 +499,53 @@ function Accounts({
       {accounts.length === 0 && (
         <Empty text="No accounts yet" hint="Track bank accounts, cash, credit cards and investments." />
       )}
+      {accounts.length > 0 && (
+        <FilterBar active={filtersActive} onClear={clearFilters}>
+          <input
+            className={`${ctl} !w-44`}
+            placeholder="Search accounts…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <select className={ctl} value={kindFilter} onChange={(e) => setKindFilter(e.target.value as AccountKind | "")}>
+            <option value="">All types</option>
+            {Object.entries(KIND_LABEL).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <select
+            className={ctl}
+            value={personFilter ?? ""}
+            onChange={(e) => setPersonFilter(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">Everyone</option>
+            {people.map((p) => (
+              <option key={p.id} value={p.id}>
+                {personLabel(p)}
+              </option>
+            ))}
+          </select>
+          <select className={ctl} value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
+            <option value="name">Sort: Name</option>
+            <option value="balance">Sort: Balance</option>
+            <option value="kind">Sort: Type</option>
+          </select>
+          <button
+            className="btn-edge !py-1 !px-2 text-[12px]"
+            title={sortDir === "asc" ? "Ascending" : "Descending"}
+            onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+          >
+            <ArrowUpDown size={13} />
+          </button>
+        </FilterBar>
+      )}
+      {accounts.length > 0 && sorted.length === 0 && (
+        <Empty text="No accounts match these filters" hint="Try clearing filters." />
+      )}
       <div className="flex flex-col gap-2">
-        {accounts.map((a) => (
+        {sorted.map((a) => (
           <div
             key={a.id}
             className="card px-4 py-3 flex items-center gap-3 group cursor-pointer hover:border-acc/40"
@@ -359,25 +583,28 @@ function Accounts({
         ))}
       </div>
 
+      {openId != null && (
+        <AccountDetailModal
+          key={openId}
+          accountId={openId}
+          accounts={accounts}
+          currency={currency}
+          onClose={() => setOpenId(null)}
+          onEdit={(a) => setEditing(a)}
+          onChanged={() => {
+            load();
+            onChanged();
+          }}
+        />
+      )}
       {editing && (
         <AccountEditor
+          key={editing === "new" ? "new" : editing.id}
           account={editing === "new" ? null : editing}
           people={people}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
-            onChanged();
-          }}
-        />
-      )}
-      {openId != null && (
-        <AccountDetailModal
-          accountId={openId}
-          accounts={accounts}
-          currency={currency}
-          onClose={() => setOpenId(null)}
-          onChanged={() => {
-            load();
             onChanged();
           }}
         />
@@ -489,17 +716,19 @@ function DeleteAccountModal({
   );
 }
 
-function AccountDetailModal({
+export function AccountDetailModal({
   accountId,
   accounts,
   currency,
   onClose,
+  onEdit,
   onChanged,
 }: {
   accountId: number;
   accounts: Account[];
   currency: string;
   onClose: () => void;
+  onEdit: (account: Account) => void;
   onChanged: () => void;
 }) {
   const account = accounts.find((a) => a.id === accountId);
@@ -526,10 +755,15 @@ function AccountDetailModal({
 
   return (
     <Modal title={account.name} onClose={onClose} wide>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-mut text-[12px]">{KIND_LABEL[account.kind]}</span>
-        {account.details.bank_name && <span className="text-mut text-[12px]">· {account.details.bank_name}</span>}
-        {account.notes && <span className="text-mut text-[12px]">· {account.notes}</span>}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-mut text-[12px]">{KIND_LABEL[account.kind]}</span>
+          {account.details.bank_name && <span className="text-mut text-[12px]">· {account.details.bank_name}</span>}
+          {account.notes && <span className="text-mut text-[12px]">· {account.notes}</span>}
+        </div>
+        <button className="btn-edge !py-1 text-[12px]" onClick={() => onEdit(account)}>
+          <Pencil size={13} /> Edit
+        </button>
       </div>
       <div className="card p-3 mb-4">
         <div className="text-mut text-[11px] mb-0.5">
@@ -599,6 +833,7 @@ function AccountDetailModal({
 
       {(adding || editingTx) && (
         <TransactionEditor
+          key={editingTx ? editingTx.id : "new"}
           transaction={editingTx}
           accounts={orderedAccounts}
           categories={categories}
@@ -679,7 +914,7 @@ function Secret({
   );
 }
 
-function AccountEditor({
+export function AccountEditor({
   account,
   people,
   onClose,
@@ -1163,6 +1398,7 @@ function Transactions({
 
       {(adding || editingTx) && (
         <TransactionEditor
+          key={editingTx ? editingTx.id : "new"}
           transaction={editingTx}
           accounts={accounts}
           categories={categories}
@@ -1210,7 +1446,7 @@ function Transactions({
   );
 }
 
-function TransactionEditor({
+export function TransactionEditor({
   transaction,
   accounts,
   categories,
@@ -1496,6 +1732,7 @@ function CategoryManagerModal({
       )}
       {renaming && (
         <RenameCategoryModal
+          key={renaming.id}
           category={renaming}
           onClose={() => setRenaming(null)}
           onSaved={() => {
@@ -1717,6 +1954,7 @@ function Subscriptions({
 
       {editing && (
         <SubscriptionEditor
+          key={editing === "new" ? "new" : editing.id}
           sub={editing === "new" ? null : editing}
           people={people}
           onClose={() => setEditing(null)}
@@ -1740,7 +1978,7 @@ function Subscriptions({
   );
 }
 
-function SubscriptionEditor({
+export function SubscriptionEditor({
   sub,
   people,
   onClose,
@@ -1965,6 +2203,7 @@ function Emis({
 
       {editing && (
         <EmiEditor
+          key={editing === "new" ? "new" : editing.id}
           emi={editing === "new" ? null : editing}
           investments={investments}
           accounts={accounts}
@@ -1989,7 +2228,7 @@ function Emis({
   );
 }
 
-function EmiEditor({
+export function EmiEditor({
   emi,
   investments,
   accounts,

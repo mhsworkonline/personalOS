@@ -537,7 +537,10 @@ fn sync_rent(conn: &Connection, rs: &RentSchedule) -> Result<(), String> {
     sync_timeline(
         conn,
         "investments",
-        rs.id,
+        // Keyed by investment_id, not the rent-schedule row id — the dashboard
+        // timeline needs source_id to be the investment to open when clicked,
+        // and at most one rent_due entry exists per investment at a time.
+        rs.investment_id,
         "rent_due",
         &format!("Rent due — {inv_name}"),
         Some(rs.next_due.as_str()),
@@ -720,8 +723,8 @@ pub fn rent_schedule_delete(state: State<'_, AppState>, id: i64) -> Result<(), S
             .ok();
         conn.execute("DELETE FROM investment_rent_schedules WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
-        sync_timeline(conn, "investments", id, "rent_due", "", None, None, None)?;
         if let Some(inv_id) = investment_id {
+            sync_timeline(conn, "investments", inv_id, "rent_due", "", None, None, None)?;
             let name: Option<String> = conn
                 .query_row("SELECT name FROM investments WHERE id = ?1", params![inv_id], |r| r.get(0))
                 .ok();

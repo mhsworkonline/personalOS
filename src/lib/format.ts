@@ -1,7 +1,8 @@
 export function fmtMoney(n: number, symbol: string): string {
   const sign = n < 0 ? "-" : "";
   const abs = Math.abs(n);
-  return `${sign}${symbol}${abs.toLocaleString(undefined, {
+  // en-IN grouping: thousands, then lakhs/crores (e.g. 27,76,420 not 2,776,420).
+  return `${sign}${symbol}${abs.toLocaleString("en-IN", {
     minimumFractionDigits: abs % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2,
   })}`;

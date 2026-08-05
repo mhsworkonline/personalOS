@@ -152,6 +152,7 @@ export default function Portfolio({
 
       {editing && (
         <HoldingEditor
+          key={editing === "new" ? "new" : editing.id}
           holding={editing === "new" ? null : editing}
           people={people}
           onClose={() => setEditing(null)}

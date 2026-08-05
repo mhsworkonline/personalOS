@@ -1,6 +1,6 @@
 [package]
 name = "personalos"
-version = "1.0.2"
+version = "1.0.3"
 description = "PersonalOS - offline-first personal dashboard, vault, finance and notes"
 edition = "2021"
 

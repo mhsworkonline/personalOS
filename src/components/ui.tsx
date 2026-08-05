@@ -79,6 +79,15 @@ export function Modal({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Escape closes every open popup unconditionally — each mounted Modal
+      // has its own listener, so one Escape press unwinds the whole stack
+      // (detail popup + its edit popup on top, etc.), regardless of which
+      // one currently holds focus.
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+
       const target = e.target as HTMLElement;
       // Nearest enclosing modal card for the key's target — order-independent
       // even with nested modals, since closest() always finds the innermost
@@ -86,11 +95,6 @@ export function Modal({
       const nearest = target.closest?.(".pop-in");
       if (nearest !== cardRef.current) return;
 
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-        return;
-      }
       if (
         e.key === "Enter" &&
         !e.shiftKey &&
