@@ -28,7 +28,23 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            let mut data_dir = app.path().app_data_dir()?;
+            // Unconditional backstop, independent of build tooling/flags: ANY
+            // debug build — a bare `cargo build`, `cargo test`, or a proper
+            // `tauri build --debug` — writes into a nested subfolder no
+            // matter what `identifier` it was compiled with. This exists
+            // because relying solely on tauri.test.conf.json's separate
+            // identifier (see build-app.js) is not enough: that override only
+            // applies when built through `node build-app.js test`, and a
+            // plain `cargo build` silently reverts to the production
+            // identifier, `com.personalos.desktop` — the same one the release
+            // build uses. That gap is exactly how a real user's vault (a
+            // month of data) was once wiped by test tooling. This check does
+            // not depend on remembering any flag: `cfg!(debug_assertions)` is
+            // false only for `--release` builds, so it can't silently regress.
+            if cfg!(debug_assertions) {
+                data_dir = data_dir.join("debug-test-data");
+            }
             std::fs::create_dir_all(&data_dir)?;
             app.manage(AppState {
                 db: Mutex::new(None),

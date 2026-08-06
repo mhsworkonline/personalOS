@@ -1,5 +1,5 @@
 ﻿use crate::{crypto, db, AppState};
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub fn vault_status(state: State<'_, AppState>) -> Result<String, String> {
@@ -67,17 +67,27 @@ pub fn lock_vault(state: State<'_, AppState>) -> Result<(), String> {
 /// Confirm the master password without touching the open session. Used as a
 /// re-authentication gate before revealing bank credentials in the UI.
 /// Derives the key (Argon2id) and test-opens the database read-only.
+///
+/// Runs on the blocking thread pool, not inline: Argon2id (64 MiB, 3
+/// iterations) takes long enough to be felt, and a plain sync command would
+/// otherwise run that derivation on the same thread that pumps the window's
+/// UI, freezing it for the duration.
 #[tauri::command]
-pub fn verify_master_password(
-    state: State<'_, AppState>,
+pub async fn verify_master_password(
+    app: tauri::AppHandle,
     password: String,
 ) -> Result<bool, String> {
-    let meta = crypto::load_meta(&state.meta_path())?;
-    let key = match crypto::derive_key(&password, &meta.kdf) {
-        Ok(k) => k,
-        Err(_) => return Ok(false),
-    };
-    Ok(db::open_encrypted(&state.db_path(), &key).is_ok())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let meta = crypto::load_meta(&state.meta_path())?;
+        let key = match crypto::derive_key(&password, &meta.kdf) {
+            Ok(k) => k,
+            Err(_) => return Ok(false),
+        };
+        Ok(db::open_encrypted(&state.db_path(), &key).is_ok())
+    })
+    .await
+    .map_err(|e| format!("Internal task error: {e}"))?
 }
 
 /// Re-encrypt the database under a key derived from a new password, using

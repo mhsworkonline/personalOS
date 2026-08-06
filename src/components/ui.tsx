@@ -338,7 +338,6 @@ export function MasterGate({
         value={password}
         autoFocus
         onChange={(e) => setPassword(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && submit()}
         disabled={busy}
       />
       {error && <div className="text-bad text-[12px] mt-2">{error}</div>}

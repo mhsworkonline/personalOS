@@ -21,7 +21,35 @@ touching crypto or storage.
   column-presence-checked steps. Never drop or rewrite user tables (FTS index
   is the only rebuildable exception). Add new tables to `backup.rs::TABLES`
   (FK-safe order) or backups will silently miss them.
+- **Secondary backups**: both `export_backup` (manual) and `auto_backup_run`
+  (daily) additionally mirror a timestamped copy to `D:\backups\PersonalOS`
+  (`backup.rs::SECONDARY_BACKUP_DIR`/`mirror_to_secondary`), added 2026-08-06
+  after [[incident-personalos-data-wipe]] destroyed the only backup location.
+  Best-effort by design: a missing D: drive logs a `backup`/"secondary backup
+  FAILED" activity entry but must never fail the primary backup. Never make
+  this the *only* backup location, and never let a failure here block a
+  primary export/auto-backup from completing.
 - Keep the architecture boring: no plugin systems, no DI, no multi-user.
+- **App data folder safety (read before ANY testing/debugging session):**
+  the real vault lives at `%APPDATA%\com.personalos.desktop\personalos.db`
+  (+ `.meta.json` + `backups\`). This is **not** exclusive to the release
+  build — it's keyed by Tauri's `identifier`, and the debug binary used to
+  share that exact identifier with the release build, meaning "wipe app data
+  for a clean test vault" silently destroyed real production data. That
+  happened once, for real, and cost the user a month of data. It is now
+  structurally prevented two ways: (1) `build-app.js test` builds with
+  `tauri.test.conf.json` layered on top, giving it the separate identifier
+  `com.personalos.desktop.test`; (2) belt-and-suspenders in `lib.rs`'s
+  `setup()`, **any** debug build (`cargo build`, `cargo test`, `tauri build
+  --debug`, with or without the config override) writes into a nested
+  `debug-test-data` subfolder no matter what identifier it resolves to.
+  **Never remove or weaken either of these.** Consequences: you can safely
+  `Remove-Item -Recurse` a debug build's data directory for a fresh vault —
+  it is never the real one. You must **never** run destructive filesystem
+  commands against `%APPDATA%\com.personalos.desktop\` itself (its root
+  files, not the nested `debug-test-data\` subfolder) without first copying
+  it elsewhere and getting explicit confirmation — that path is only ever
+  touched by a genuine release build.
 
 ## Hidden modules
 
@@ -67,9 +95,11 @@ npm run release 1.1.0    # same, syncing the version across all three files
   `HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`,
   then `https://msedgedriver.microsoft.com/<version>/edgedriver_win64.zip`).
 - E2E run: `tauri-driver --native-driver <msedgedriver.exe>` then
-  `node tests/e2e.mjs <shots-dir>` (wipe `%APPDATA%\com.personalos.desktop`
-  first; kill leftover `personalos.exe` processes or the release build fails
-  with "Access is denied"). WebDriver gotchas: `getText` returns
+  `node tests/e2e.mjs <shots-dir>` — this targets `target\debug\personalos.exe`
+  (never the release binary; see "App data folder safety" above). For a fresh
+  vault, wipe `%APPDATA%\com.personalos.desktop\debug-test-data` (the nested
+  debug-only subfolder — not its parent). Kill leftover `personalos.exe`
+  processes or the build fails with "Access is denied". WebDriver gotchas: `getText` returns
   CSS-uppercased text (compare case-insensitively); `clear()` doesn't reset
   React controlled inputs — use click + Ctrl+A + overtype; set date inputs
   via `execute/sync` with the native value setter + `input` event; the

@@ -5,17 +5,15 @@
 //! the same strategy as vault `fields`. ATM PINs, CVVs, UPI PINs and OTPs are
 //! rejected outright and can never be stored.
 
-use super::with_db;
+use super::with_db_async;
 use crate::db::{self, advance_date, index_record, log_activity, sync_timeline, unindex_record};
 use crate::models::{
     Account, AccountInput, CategorySpend, Emi, EmiInput, FinanceCharts, FinanceOverview, KindTotal,
     MonthlyFlow, Subscription, SubscriptionInput, Transaction, TransactionCategory, TransactionInput,
     TransferInput, TransferResult,
 };
-use crate::AppState;
 use rusqlite::{params, Connection, Row};
 use std::collections::HashMap;
-use tauri::State;
 
 pub const ACCOUNT_KINDS: [&str; 4] = ["bank", "cash", "credit_card", "investment"];
 
@@ -28,8 +26,8 @@ const FORBIDDEN_DETAIL_KEYS: [&str; 6] = ["cvv", "atm_pin", "upi_pin", "otp", "p
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn category_list(state: State<'_, AppState>) -> Result<Vec<TransactionCategory>, String> {
-    with_db(&state, |conn| {
+pub async fn category_list(app: tauri::AppHandle) -> Result<Vec<TransactionCategory>, String> {
+    with_db_async(app, |conn| {
         let mut stmt = conn
             .prepare("SELECT id, name FROM transaction_categories ORDER BY name COLLATE NOCASE")
             .map_err(|e| e.to_string())?;
@@ -40,15 +38,16 @@ pub fn category_list(state: State<'_, AppState>) -> Result<Vec<TransactionCatego
             .map_err(|e| e.to_string())?;
         Ok(rows)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn category_create(state: State<'_, AppState>, name: String) -> Result<TransactionCategory, String> {
+pub async fn category_create(app: tauri::AppHandle, name: String) -> Result<TransactionCategory, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Category name must not be empty".into());
     }
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         conn.execute(
             "INSERT INTO transaction_categories (name, created_at) VALUES (?1, ?2)",
             params![name, db::now()],
@@ -56,30 +55,33 @@ pub fn category_create(state: State<'_, AppState>, name: String) -> Result<Trans
         .map_err(|_| "A category with that name already exists".to_string())?;
         Ok(TransactionCategory { id: conn.last_insert_rowid(), name })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn category_rename(state: State<'_, AppState>, id: i64, name: String) -> Result<(), String> {
+pub async fn category_rename(app: tauri::AppHandle, id: i64, name: String) -> Result<(), String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Category name must not be empty".into());
     }
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         conn.execute("UPDATE transaction_categories SET name = ?1 WHERE id = ?2", params![name, id])
             .map_err(|_| "A category with that name already exists".to_string())?;
         Ok(())
     })
+    .await
 }
 
 #[tauri::command]
-pub fn category_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| {
+pub async fn category_delete(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    with_db_async(app, move |conn| {
         // Past transactions keep their stored category text unchanged — it's
         // a plain column, not a foreign key.
         conn.execute("DELETE FROM transaction_categories WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         Ok(())
     })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +124,8 @@ pub fn accounts_for(conn: &Connection, person: Option<i64>) -> Result<Vec<Accoun
 }
 
 #[tauri::command]
-pub fn account_list(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
-    with_db(&state, |conn| accounts_for(conn, None))
+pub async fn account_list(app: tauri::AppHandle) -> Result<Vec<Account>, String> {
+    with_db_async(app, |conn| accounts_for(conn, None)).await
 }
 
 /// Recursively reject any forbidden key (CVV, ATM PIN, UPI PIN, OTP).
@@ -151,7 +153,7 @@ fn check_forbidden(value: &serde_json::Value) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn account_save(state: State<'_, AppState>, input: AccountInput) -> Result<Account, String> {
+pub async fn account_save(app: tauri::AppHandle, input: AccountInput) -> Result<Account, String> {
     if input.name.trim().is_empty() {
         return Err("Account name must not be empty".into());
     }
@@ -162,7 +164,7 @@ pub fn account_save(state: State<'_, AppState>, input: AccountInput) -> Result<A
         return Err("Details must be an object".into());
     }
     check_forbidden(&input.details)?;
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let now = db::now();
         let name = input.name.trim().to_string();
         let details_raw = serde_json::to_string(&input.details).map_err(|e| e.to_string())?;
@@ -237,13 +239,14 @@ pub fn account_save(state: State<'_, AppState>, input: AccountInput) -> Result<A
         )?;
         Ok(account)
     })
+    .await
 }
 
 /// What deleting this account would affect, so the UI can show an impact
 /// summary before the user confirms (mirrors `investments::investment_related_counts`).
 #[tauri::command]
-pub fn account_related_counts(state: State<'_, AppState>, id: i64) -> Result<HashMap<String, i64>, String> {
-    with_db(&state, |conn| {
+pub async fn account_related_counts(app: tauri::AppHandle, id: i64) -> Result<HashMap<String, i64>, String> {
+    with_db_async(app, move |conn| {
         let mut out = HashMap::new();
         for (label, sql) in [
             ("transactions", "SELECT COUNT(*) FROM transactions WHERE account_id = ?1"),
@@ -258,11 +261,12 @@ pub fn account_related_counts(state: State<'_, AppState>, id: i64) -> Result<Has
         }
         Ok(out)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn account_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| delete_account(conn, id))
+pub async fn account_delete(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    with_db_async(app, move |conn| delete_account(conn, id)).await
 }
 
 fn delete_account(conn: &Connection, id: i64) -> Result<(), String> {
@@ -433,12 +437,12 @@ pub fn delete_transaction_row(conn: &Connection, id: i64) -> Result<Option<i64>,
 }
 
 #[tauri::command]
-pub fn transaction_list(
-    state: State<'_, AppState>,
+pub async fn transaction_list(
+    app: tauri::AppHandle,
     account: Option<i64>,
     limit: Option<i64>,
 ) -> Result<Vec<Transaction>, String> {
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let limit = limit.unwrap_or(200).clamp(1, 1000);
         let (sql, binds): (String, Vec<Box<dyn rusqlite::ToSql>>) = match account {
             Some(aid) => (
@@ -459,14 +463,15 @@ pub fn transaction_list(
             .map_err(|e| e.to_string())?;
         Ok(rows)
     })
+    .await
 }
 
 /// Create or edit a manual transaction. Transfer legs (which carry a
 /// `transfer_peer_id`) can't be edited here — delete and recreate them via
 /// `transaction_transfer` instead, since editing one leg would desync the pair.
 #[tauri::command]
-pub fn transaction_save(
-    state: State<'_, AppState>,
+pub async fn transaction_save(
+    app: tauri::AppHandle,
     input: TransactionInput,
 ) -> Result<Transaction, String> {
     if input.amount <= 0.0 {
@@ -477,7 +482,7 @@ pub fn transaction_save(
     }
     chrono::NaiveDate::parse_from_str(&input.date, "%Y-%m-%d")
         .map_err(|_| "Date must be YYYY-MM-DD".to_string())?;
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let tx = match input.id {
             Some(id) => {
                 let (old_account, old_kind, old_amount, transfer_peer): (i64, String, f64, Option<i64>) = conn
@@ -545,16 +550,18 @@ pub fn transaction_save(
         )?;
         Ok(tx)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn transaction_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| {
+pub async fn transaction_delete(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    with_db_async(app, move |conn| {
         if let Some(peer_id) = delete_transaction_row(conn, id)? {
             delete_transaction_row(conn, peer_id)?;
         }
         Ok(())
     })
+    .await
 }
 
 /// Move money between two accounts (e.g. a cash withdrawal from a bank
@@ -562,8 +569,8 @@ pub fn transaction_delete(state: State<'_, AppState>, id: i64) -> Result<(), Str
 /// atomically; excluded from income/expense totals since nothing was earned
 /// or spent — it's the same money, just in a different place.
 #[tauri::command]
-pub fn transaction_transfer(
-    state: State<'_, AppState>,
+pub async fn transaction_transfer(
+    app: tauri::AppHandle,
     input: TransferInput,
 ) -> Result<TransferResult, String> {
     if input.amount <= 0.0 {
@@ -574,7 +581,7 @@ pub fn transaction_transfer(
     }
     chrono::NaiveDate::parse_from_str(&input.date, "%Y-%m-%d")
         .map_err(|_| "Date must be YYYY-MM-DD".to_string())?;
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let from_name: String = conn
             .query_row("SELECT name FROM accounts WHERE id = ?1", params![input.from_account_id], |r| r.get(0))
             .map_err(|_| "Source account not found".to_string())?;
@@ -615,6 +622,7 @@ pub fn transaction_transfer(
         log_activity(conn, "finance", "transfer", &format!("{from_name} → {to_name}"), Some(debit.id))?;
         Ok(TransferResult { debit, credit })
     })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -670,20 +678,20 @@ pub fn subscriptions_for(conn: &Connection, person: Option<i64>) -> Result<Vec<S
 }
 
 #[tauri::command]
-pub fn subscription_list(state: State<'_, AppState>) -> Result<Vec<Subscription>, String> {
-    with_db(&state, |conn| subscriptions_for(conn, None))
+pub async fn subscription_list(app: tauri::AppHandle) -> Result<Vec<Subscription>, String> {
+    with_db_async(app, |conn| subscriptions_for(conn, None)).await
 }
 
 #[tauri::command]
-pub fn subscription_save(
-    state: State<'_, AppState>,
+pub async fn subscription_save(
+    app: tauri::AppHandle,
     input: SubscriptionInput,
 ) -> Result<Subscription, String> {
     if input.name.trim().is_empty() {
         return Err("Subscription name must not be empty".into());
     }
     advance_date(&input.next_renewal, &input.cycle)?; // validates both date and cycle
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let now = db::now();
         let name = input.name.trim().to_string();
         let person_id = match input.person_id {
@@ -735,12 +743,13 @@ pub fn subscription_save(
         )?;
         Ok(sub)
     })
+    .await
 }
 
 /// "Mark renewed": move next_renewal forward one cycle.
 #[tauri::command]
-pub fn subscription_advance(state: State<'_, AppState>, id: i64) -> Result<Subscription, String> {
-    with_db(&state, |conn| {
+pub async fn subscription_advance(app: tauri::AppHandle, id: i64) -> Result<Subscription, String> {
+    with_db_async(app, move |conn| {
         let sub = conn
             .query_row(
                 &format!("SELECT {SUB_COLS} FROM subscriptions WHERE id = ?1"),
@@ -765,11 +774,12 @@ pub fn subscription_advance(state: State<'_, AppState>, id: i64) -> Result<Subsc
         log_activity(conn, "finance", "renewed", &sub.name, Some(id))?;
         Ok(sub)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn subscription_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| {
+pub async fn subscription_delete(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    with_db_async(app, move |conn| {
         let name: Option<String> = conn
             .query_row("SELECT name FROM subscriptions WHERE id = ?1", params![id], |r| r.get(0))
             .ok();
@@ -782,6 +792,7 @@ pub fn subscription_delete(state: State<'_, AppState>, id: i64) -> Result<(), St
         }
         Ok(())
     })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -843,8 +854,8 @@ fn sync_emi(conn: &Connection, emi: &Emi) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn emi_list(state: State<'_, AppState>) -> Result<Vec<Emi>, String> {
-    with_db(&state, |conn| {
+pub async fn emi_list(app: tauri::AppHandle) -> Result<Vec<Emi>, String> {
+    with_db_async(app, |conn| {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {EMI_COLS} FROM emis ORDER BY active DESC, next_due ASC"
@@ -857,10 +868,11 @@ pub fn emi_list(state: State<'_, AppState>) -> Result<Vec<Emi>, String> {
             .map_err(|e| e.to_string())?;
         Ok(rows)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn emi_save(state: State<'_, AppState>, input: EmiInput) -> Result<Emi, String> {
+pub async fn emi_save(app: tauri::AppHandle, input: EmiInput) -> Result<Emi, String> {
     if input.name.trim().is_empty() {
         return Err("EMI name must not be empty".into());
     }
@@ -872,7 +884,7 @@ pub fn emi_save(state: State<'_, AppState>, input: EmiInput) -> Result<Emi, Stri
     }
     chrono::NaiveDate::parse_from_str(&input.next_due, "%Y-%m-%d")
         .map_err(|_| "Next due date must be YYYY-MM-DD".to_string())?;
-    with_db(&state, |conn| {
+    with_db_async(app, move |conn| {
         let now = db::now();
         let name = input.name.trim().to_string();
         let id = match input.id {
@@ -925,11 +937,12 @@ pub fn emi_save(state: State<'_, AppState>, input: EmiInput) -> Result<Emi, Stri
         )?;
         Ok(emi)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn emi_mark_paid(state: State<'_, AppState>, id: i64) -> Result<Emi, String> {
-    with_db(&state, |conn| {
+pub async fn emi_mark_paid(app: tauri::AppHandle, id: i64) -> Result<Emi, String> {
+    with_db_async(app, move |conn| {
         let emi = conn
             .query_row(
                 &format!("SELECT {EMI_COLS} FROM emis WHERE id = ?1"),
@@ -1008,11 +1021,12 @@ pub fn emi_mark_paid(state: State<'_, AppState>, id: i64) -> Result<Emi, String>
         )?;
         Ok(emi)
     })
+    .await
 }
 
 #[tauri::command]
-pub fn emi_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |conn| {
+pub async fn emi_delete(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    with_db_async(app, move |conn| {
         let name: Option<String> = conn
             .query_row("SELECT name FROM emis WHERE id = ?1", params![id], |r| r.get(0))
             .ok();
@@ -1025,6 +1039,7 @@ pub fn emi_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
         }
         Ok(())
     })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,8 +1057,8 @@ fn monthly_equivalent(amount: f64, cycle: &str) -> f64 {
 }
 
 #[tauri::command]
-pub fn finance_overview(state: State<'_, AppState>) -> Result<FinanceOverview, String> {
-    with_db(&state, |conn| {
+pub async fn finance_overview(app: tauri::AppHandle) -> Result<FinanceOverview, String> {
+    with_db_async(app, |conn| {
         let mut stmt = conn
             .prepare("SELECT kind, SUM(balance), COUNT(*) FROM accounts GROUP BY kind")
             .map_err(|e| e.to_string())?;
@@ -1117,13 +1132,14 @@ pub fn finance_overview(state: State<'_, AppState>) -> Result<FinanceOverview, S
             active_emis,
         })
     })
+    .await
 }
 
 /// Cash flow for the last 6 calendar months and expense-by-category for the
 /// current month, both derived from `transactions` (no new tables needed).
 #[tauri::command]
-pub fn finance_charts(state: State<'_, AppState>) -> Result<FinanceCharts, String> {
-    with_db(&state, |conn| {
+pub async fn finance_charts(app: tauri::AppHandle) -> Result<FinanceCharts, String> {
+    with_db_async(app, |conn| {
         let today = db::today();
         let mut y: i32 = today[0..4].parse().map_err(|_| "bad date".to_string())?;
         let mut m: i32 = today[5..7].parse().map_err(|_| "bad date".to_string())?;
@@ -1175,6 +1191,7 @@ pub fn finance_charts(state: State<'_, AppState>) -> Result<FinanceCharts, Strin
 
         Ok(FinanceCharts { monthly, categories })
     })
+    .await
 }
 
 #[cfg(test)]

@@ -5,6 +5,17 @@
 //   node build-app.js test              -> out/test/personalos.exe
 //        Debug profile, no installer (--no-bundle) so the edit/test loop
 //        stays fast. Ungated: it is for trying a change, not for shipping.
+//        Built with tauri.test.conf.json layered on top (via `--config`),
+//        which overrides `identifier` to com.personalos.desktop.test. Tauri
+//        derives the app data directory from `identifier`, so this gives the
+//        test build its OWN sandboxed vault at
+//        %APPDATA%\com.personalos.desktop.test\ — completely separate from
+//        the real vault at %APPDATA%\com.personalos.desktop\ that the release
+//        build uses. This is load-bearing, not cosmetic: before it existed,
+//        test and release builds silently shared one real vault, and wiping
+//        app data for a clean test run (a normal, reasonable thing to do
+//        while testing) destroyed a month of real user data. Never remove
+//        this override or make the two identifiers converge again.
 //
 //   node build-app.js release [x.y.z]   -> out/release/personalos.exe
 //                                          out/release/PersonalOS_<v>_x64-setup.exe
@@ -112,7 +123,7 @@ if (mode === "release" && existsSync(nsisDir)) {
 
 run(
   mode === "test"
-    ? "npm run tauri build -- --debug --no-bundle"
+    ? "npm run tauri build -- --debug --no-bundle --config src-tauri/tauri.test.conf.json"
     : "npm run tauri build"
 );
 

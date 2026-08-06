@@ -6,12 +6,19 @@
 // Usage:
 //   tauri-driver --native-driver <msedgedriver.exe matching WebView2>   (terminal 1)
 //   node tests/e2e.mjs <screenshot-dir>                                 (terminal 2)
-// Delete %APPDATA%\com.personalos.desktop first (fresh vault).
+//
+// Points at the DEBUG binary, never the release one. Any debug build writes
+// into a nested `debug-test-data` subfolder no matter what identifier it was
+// compiled with (see the `cfg!(debug_assertions)` check in src-tauri/src/
+// lib.rs) — so it is always safe to delete its data folder for a fresh vault,
+// unlike the release binary, which is the real app and shares the real vault
+// with production use. Never point this at target\release\personalos.exe or
+// out\release\personalos.exe.
 import fs from "node:fs";
 import path from "node:path";
 
 const DRIVER = "http://127.0.0.1:4444";
-const APP = "C:\\claude-folder\\personalOS\\src-tauri\\target\\release\\personalos.exe";
+const APP = "C:\\claude-folder\\personalOS\\src-tauri\\target\\debug\\personalos.exe";
 const SHOTS = process.argv[2] ?? ".";
 const MASTER = "test-master-pass-123";
 

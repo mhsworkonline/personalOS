@@ -13,7 +13,57 @@ use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use tauri::State;
+
+/// Off-machine-drive safety copy of every backup (manual export AND daily
+/// auto-backup), on top of — never instead of — their normal locations.
+/// Added 2026-08-06 after a real incident where the only backup location
+/// (nested inside the app data folder) got destroyed along with everything
+/// else it was meant to protect against. This lives on a different drive
+/// specifically so wiping/losing the app data folder can never take the
+/// backups down with it. Best-effort: a missing/unavailable D: drive must
+/// never fail the primary backup that's actually gating data safety.
+const SECONDARY_BACKUP_DIR: &str = r"D:\backups\PersonalOS";
+
+/// Copy `src` into `SECONDARY_BACKUP_DIR` as `<prefix>-<date>_<time>.<ext>`.
+/// Never returns an error to the caller — failures (drive not present, no
+/// permission, etc.) are logged to the activity feed so they're visible in
+/// the app instead of silently vanishing, but must never block or fail the
+/// primary backup this is mirroring.
+fn mirror_to_secondary(conn: &Connection, src: &Path, prefix: &str, ext: &str) {
+    mirror_to_dir(conn, src, Path::new(SECONDARY_BACKUP_DIR), prefix, ext)
+}
+
+/// Testable core of `mirror_to_secondary`, with the destination directory
+/// injected so tests can point it at a tempdir instead of the real
+/// `D:\backups\PersonalOS` — this must never write test artifacts into the
+/// user's actual secondary backup location.
+fn mirror_to_dir(conn: &Connection, src: &Path, dest_dir: &Path, prefix: &str, ext: &str) {
+    let stamp = crate::db::now().replace([':', 'T'], "-"); // filesystem-safe
+    let dest = dest_dir.join(format!("{prefix}-{stamp}.{ext}"));
+    let result = std::fs::create_dir_all(dest_dir).and_then(|_| std::fs::copy(src, &dest).map(|_| ()));
+    match result {
+        Ok(()) => {
+            let _ = crate::db::log_activity(
+                conn,
+                "backup",
+                "secondary backup",
+                &dest.to_string_lossy(),
+                None,
+            );
+        }
+        Err(e) => {
+            let _ = crate::db::log_activity(
+                conn,
+                "backup",
+                "secondary backup FAILED",
+                &format!("{}: {e}", dest_dir.display()),
+                None,
+            );
+        }
+    }
+}
 
 /// Insert order respects foreign keys; deletes run in reverse.
 /// `persons` first — nearly everything references it; `investments` before
@@ -152,6 +202,7 @@ pub fn export_backup(
         let plaintext = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
         let encrypted = crypto::encrypt_backup(&password, &plaintext)?;
         std::fs::write(&path, encrypted).map_err(|e| format!("Cannot write backup: {e}"))?;
+        mirror_to_secondary(conn, Path::new(&path), "personalos-manual", "posb");
         Ok(format!("Backup written to {path}"))
     })
 }
@@ -233,6 +284,7 @@ pub fn auto_backup_run(state: State<'_, AppState>) -> Result<Option<String>, Str
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|e| format!("Checkpoint failed: {e}"))?;
         std::fs::copy(state.db_path(), &dest).map_err(|e| format!("Auto backup failed: {e}"))?;
+        mirror_to_secondary(conn, &dest, "personalos-auto", "db");
 
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('last_auto_backup', ?1)
@@ -273,6 +325,46 @@ pub fn data_file_info(state: State<'_, AppState>) -> Result<HashMap<String, Stri
 mod tests {
     use super::*;
     use crate::{crypto, db};
+
+    /// The secondary-backup mirror copies the file, timestamps the name so
+    /// repeated backups never collide, and logs success to the activity feed
+    /// — all against a tempdir, never the real D:\backups\PersonalOS.
+    #[test]
+    fn secondary_backup_mirrors_file_and_logs_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = {
+            let meta = crypto::new_meta();
+            let key = crypto::derive_key("password123", &meta.kdf).unwrap();
+            let conn = db::open_encrypted(&dir.path().join("test.db"), &key).unwrap();
+            db::ensure_schema(&conn).unwrap();
+            conn
+        };
+
+        let src = dir.path().join("source.db");
+        std::fs::write(&src, b"fake encrypted backup bytes").unwrap();
+        let secondary_dir = dir.path().join("secondary");
+
+        mirror_to_dir(&conn, &src, &secondary_dir, "personalos-auto", "db");
+
+        let files: Vec<_> = std::fs::read_dir(&secondary_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(files.len(), 1, "exactly one mirrored file should exist");
+        let name = files[0].file_name().to_string_lossy().to_string();
+        assert!(name.starts_with("personalos-auto-"), "unexpected name: {name}");
+        assert!(name.ends_with(".db"));
+        assert_eq!(std::fs::read(files[0].path()).unwrap(), b"fake encrypted backup bytes");
+
+        let logged: String = conn
+            .query_row(
+                "SELECT action FROM activity_log WHERE module = 'backup' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, "secondary backup");
+    }
 
     /// Full export→encrypt→decrypt→restore roundtrip between two separately
     /// encrypted databases, exactly as the export/import commands do it —

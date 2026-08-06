@@ -585,7 +585,16 @@ function Accounts({
 
       {openId != null && (
         <AccountDetailModal
-          key={openId}
+          // Namespaced so this key can never collide with AccountEditor's
+          // below: editing an account from within its own detail popup means
+          // `editing.id === openId`, and React requires keys to be unique
+          // across ALL siblings in the same parent regardless of element
+          // type. A collision corrupts React's reconciliation bookkeeping —
+          // it silently orphans one of the two DOM subtrees (never re-rendered,
+          // never unmounted) instead of swapping cleanly, which is exactly
+          // what caused the "popup won't close after editing" bug: a dead,
+          // stale copy of this modal was left stacked behind the live one.
+          key={`detail-${openId}`}
           accountId={openId}
           accounts={accounts}
           currency={currency}
@@ -599,7 +608,7 @@ function Accounts({
       )}
       {editing && (
         <AccountEditor
-          key={editing === "new" ? "new" : editing.id}
+          key={`editor-${editing === "new" ? "new" : editing.id}`}
           account={editing === "new" ? null : editing}
           people={people}
           onClose={() => setEditing(null)}
@@ -1612,7 +1621,6 @@ function NewCategoryModal({
           value={name}
           autoFocus
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && save()}
         />
       </Field>
       <div className="flex justify-end gap-2 mt-2">
@@ -1657,7 +1665,6 @@ function RenameCategoryModal({
           value={name}
           autoFocus
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && save()}
         />
       </Field>
       <div className="flex justify-end gap-2 mt-2">

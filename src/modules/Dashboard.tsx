@@ -500,7 +500,13 @@ export default function Dashboard({
 
       {quickView?.kind === "account" && (
         <AccountDetailModal
-          key={quickView.id}
+          // Namespaced: editing an account from within this detail popup sets
+          // editingAccount to the same account, so its key below would equal
+          // this one's — React requires sibling keys to be unique regardless
+          // of element type, and a collision here silently orphans one of the
+          // two DOM subtrees instead of swapping cleanly (see Finance.tsx's
+          // Accounts component for the full writeup of this failure mode).
+          key={`detail-${quickView.id}`}
           accountId={quickView.id}
           accounts={qvAccounts}
           currency={currency}
@@ -514,7 +520,7 @@ export default function Dashboard({
       )}
       {editingAccount && (
         <AccountEditor
-          key={editingAccount.id}
+          key={`editor-${editingAccount.id}`}
           account={editingAccount}
           people={people}
           onClose={() => setEditingAccount(null)}
